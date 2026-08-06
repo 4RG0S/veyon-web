@@ -1,163 +1,111 @@
-# Veyon - Virtual Eye On Networks
+# CHECK NODE
 
-[![.github/workflows/build.yml](https://github.com/veyon/veyon/actions/workflows/build.yml/badge.svg?branch=4.5)](https://github.com/veyon/veyon/actions/workflows/build.yml)
-[![Latest stable release](https://img.shields.io/github/release/veyon/veyon.svg?maxAge=3600)](https://github.com/veyon/veyon/releases)
-[![Overall downloads on Github](https://img.shields.io/github/downloads/veyon/veyon/total.svg?maxAge=3600)](https://github.com/veyon/veyon/releases)
-[![Documentation Status](https://readthedocs.org/projects/veyon/badge/?version=latest)](https://docs.veyon.io/)
-[![Localise on Transifex](https://img.shields.io/badge/localise-on_transifex-green.svg)](https://app.transifex.com/veyon-solutions/veyon/)
-[![license](https://img.shields.io/badge/license-GPLv2-green.svg)](LICENSE)
+CHECK NODE는 **client watch program**으로, master PC가 slave PC들에 대하여 특정 URL과
+프로그램에 접근하는 것을 차단시키는 프로그램이다.
 
 
-## What is Veyon?
+## 개요
 
-Veyon is a free and open source software for monitoring and controlling
-computers across multiple platforms. Veyon supports you in teaching in digital
-learning environments, performing virtual trainings or giving remote support.
+- **master PC** — 관리자가 사용. 차단 정책을 지정하고 slave에 적용/해제한다.
+- **slave PC** — 관리 대상. master의 지시에 따라 접근 차단을 수행한다.
 
-The following features are available in Veyon:
-
-  * Overview: monitor all computers in one or multiple locations or classrooms
-  * Remote access: view or control computers to watch and support users
-  * Demo: broadcast the teacher's screen in realtime (fullscreen/window)
-  * Screen lock: draw attention to what matters right now
-  * Communication: send text messages to students
-  * Start and end lessons: log in and log out users all at once
-  * Screenshots: record learning progress and document infringements
-  * Programs & websites: launch programs and open website URLs remotely
-  * Teaching material: distribute and open documents, images and videos easily
-  * Administration: power on/off and reboot computers remotely
+master와 slave는 네트워크로 연결되며, master가 각 slave의 에이전트(서버)에 접속해
+제어 메시지를 전송하는 구조다.
 
 
-## License
+## 요구사항
 
-Copyright (c) 2004-2026 Tobias Junghans / Veyon Solutions.
-
-See the file COPYING for the GNU GENERAL PUBLIC LICENSE.
+- **master PC와 slave PC는 전부 Windows여야 한다.**
 
 
-## Installation and configuration
+## 수행하는 역할
 
-Please refer to the official Veyon Administrator Manual at https://docs.veyon.io/en/latest/admin/index.html
-for information on the installation and configuration of Veyon.
-
-
-## Usage
-
-Please refer to the official Veyon User Manual at https://docs.veyon.io/en/latest/user/index.html
-for information on how to use Veyon.
+- **웹사이트 접근 제어** — 지정한 URL에 대한 slave의 접근을 차단한다.
+- **프로그램 실행 제어** — 지정한 프로그램의 slave에서의 실행을 차단한다.
 
 
-## Veyon on Linux
+## 기능 명세
 
-### Downloading sources
+### 1. 웹사이트 접근 제어
 
-First grab the latest sources by cloning the Git repository and fetching all submodules:
+| 항목 | 내용 |
+| --- | --- |
+| 대상 지정 | master에서 차단할 URL 목록을 지정한다. |
+| 적용 범위 | 선택한 slave PC(단일/다중)에 일괄 적용한다. |
+| 동작 | slave에서 해당 URL에 대한 브라우저 접근을 차단한다. |
+| 켜기/끄기 | master의 토글로 차단을 시작(Block)하고 해제(Unblock)한다. |
+| 상태 | 차단 활성/비활성 상태가 slave별로 유지된다. |
 
-	git clone --recursive https://github.com/veyon/veyon.git && cd veyon
+### 2. 프로그램 실행 제어
 
+| 항목 | 내용 |
+| --- | --- |
+| 대상 지정 | master에서 차단할 프로그램(실행 파일) 목록을 지정한다. |
+| 적용 범위 | 선택한 slave PC(단일/다중)에 일괄 적용한다. |
+| 동작 | slave에서 해당 프로그램의 실행을 차단한다. |
+| 켜기/끄기 | master의 토글로 차단을 시작(Block)하고 해제(Unblock)한다. |
+| 상태 | 차단 활성/비활성 상태가 slave별로 유지된다. |
 
-### Installing dependencies
+### 조작 방식
 
-Requirements for Debian-based distributions:
+차단 기능은 master 툴바의 모드형 버튼(**Block access** / **Unblock access**)으로
+제공되며, 커맨드라인에서도 실행할 수 있다:
 
-- Build tools: g++ libc6-dev make cmake dpkg-dev
-- Qt5: qtbase5-dev qtbase5-private-dev qtbase5-dev-tools qttools5-dev qttools5-dev-tools
-- X11: xorg-dev libxtst-dev libfakekey-dev
-- libjpeg: libjpeg-dev provided by libjpeg-turbo8-dev or libjpeg62-turbo-dev
-- zlib: zlib1g-dev
-- OpenSSL: libssl-dev
-- PAM: libpam0g-dev
-- procps: libprocps-dev
-- LZO: liblzo2-dev
-- QCA: libqca-qt5-2-dev
-- LDAP: libldap2-dev
-- SASL: libsasl2-dev
-
-As root you can run
-
-	apt install g++ libc6-dev make cmake qtbase5-dev qtbase5-private-dev \
-	            qtbase5-dev-tools qttools5-dev qttools5-dev-tools \
-	            xorg-dev libxtst-dev libfakekey-dev libjpeg-dev zlib1g-dev libssl-dev libpam0g-dev \
-	            libprocps-dev liblzo2-dev libqca-qt5-2-dev libldap2-dev \
-	            libsasl2-dev
+    veyon-cli feature start <host> AccessBlock
+    veyon-cli feature stop  <host> AccessBlock
 
 
+## Veyon 기반 기능
 
-Requirements for RedHat-based distributions:
+CHECK NODE는 Veyon을 기반으로 하므로 다음 기능들도 함께 제공된다:
 
-- Build tools: gcc-c++ make cmake rpm-build
-- Qt5: qt5-devel qt5-qtbase-private-devel
-- X11: libXtst-devel libXrandr-devel libXinerama-devel libXcursor-devel libXrandr-devel libXdamage-devel libXcomposite-devel libXfixes-devel libfakekey-devel
-- libjpeg: libjpeg-turbo-devel
-- zlib: zlib-devel
-- OpenSSL: openssl-devel
-- PAM: pam-devel
-- procps: procps-devel
-- LZO: lzo-devel
-- QCA: qca-devel qca-qt5-devel
-- LDAP: openldap-devel
-- SASL: cyrus-sasl-devel
+- **모니터링(Overview)** — 여러 위치/컴퓨터를 한눈에 확인
+- **원격 접근(Remote access)** — 컴퓨터 화면 보기 또는 원격 제어
+- **데모(Demo)** — master 화면을 slave들에 실시간 브로드캐스트
+- **화면 잠금(Screen lock)** — 입력 장치 잠금 및 화면 가리기
+- **메시지(Communication)** — 텍스트 메시지 전송
+- **로그인/로그아웃** — 사용자 일괄 로그인/로그아웃
+- **스크린샷(Screenshots)** — 화면 캡처 기록
+- **프로그램·웹사이트** — 원격으로 프로그램 실행 / 웹사이트 열기
+- **자료 배포(Teaching material)** — 문서·이미지·영상 배포 및 열기
+- **관리(Administration)** — 원격 전원 켜기/끄기, 재부팅
 
-As root you can run
-
-	dnf install gcc-c++ make cmake rpm-build qt5-devel libXtst-devel libXrandr-devel libXinerama-devel libXcursor-devel \
-             libXrandr-devel libXdamage-devel libXcomposite-devel libXfixes-devel libjpeg-turbo-devel zlib-devel \
-             openssl-devel pam-devel procps-devel lzo-devel qca-devel qca-qt5-devel openldap-devel cyrus-sasl-devel
+> 참고: 화면 캡처 기반 기능(모니터링 썸네일, 원격 화면 보기, 데모, 스크린샷)은
+> 현재 Windows용 화면 캡처 VNC 서버가 제거된 상태라 정상 동작하지 않을 수 있다.
+> 아래 "구현 상태"를 참고한다.
 
 
-### Configuring and building sources
+## 아키텍처
 
-Run the following commands:
+- 차단 기능은 `plugins/accessblock/` 의 **AccessBlock** 기능 플러그인으로 구현된다.
+- 메시지 흐름은 **master → server → worker** 3단 구조를 따른다.
+  master가 차단 대상(URL/프로그램 목록)을 담아 slave 서버로 전송하면,
+  서버가 이를 해석해 차단을 적용한다.
 
-	mkdir build
-	cd build
-	cmake ..
-	make -j4
 
-NOTE: If you want to build a .deb or .rpm package for this software, instead of the provided cmake command, you should use:
+## 구현 상태
 
-	cmake -DCMAKE_INSTALL_PREFIX=/usr ..
+| 항목 | 상태 |
+| --- | --- |
+| master → server 메시지 배관 | 구현 및 종단간 검증 완료 (Start/Stop이 대상 목록을 담아 서버 핸들러까지 도달) |
+| 웹사이트 접근 제어 로직 | 미구현 (서버 핸들러가 수신 상태를 로그로만 출력) |
+| 프로그램 실행 제어 로직 | 미구현 |
+| slave 화면 보기(원격 화면 조회) | 현재 미포함 — Windows용 화면 캡처 VNC 서버가 제거된 상태 |
 
-to install package files in /usr instead of /usr/local.
 
-If some requirements are not fullfilled, CMake will inform you about it and
-you will have to install the missing software before continuing.
+## 빌드
 
-You can now generate a package (.deb or .rpm depending what system you are in).
+MSYS2 MINGW64 네이티브 환경(Qt6, Ninja):
 
-For generating a package you can run
+    cmake -S . -B build -G Ninja -DWITH_BUNDLED_LIBVNC=ON -DWITH_LTO=OFF -DWITH_TRANSLATIONS=OFF
+    cmake --build build
 
-	fakeroot make package
+빌드 후 `./deploy.sh` 를 실행하면 `run/` 에 실행 파일과 플러그인 DLL이 모인다.
 
-Then you'll get something like veyon_x.y.z_arch.deb or veyon-x.y.z.arch.rpm
 
-Alternatively you can install the built binaries directly (not recommended for
-production systems) by running the following command as root:
+## 라이선스 및 기반
 
-	make install
+이 프로젝트는 [Veyon](https://veyon.io) 을 기반으로 하며, **GNU GPLv2** 라이선스를 따른다.
+자세한 내용은 `COPYING` 파일을 참고한다.
 
-### Arch linux
-
-A PKGBUILD can be found in the [AUR](https://aur.archlinux.org/packages/veyon/).
-
-### PPA
-
-This PPA contains official Veyon packages for Ubuntu suitable for use both on desktop computers and ARM boards (e.g. Raspberry Pi). Even though only packages for LTS releases are available they should work for subsequent non-LTS releases as well.
-
-	sudo add-apt-repository ppa:veyon/stable
-	sudo apt-get update
-
-## Join development
-
-If you are interested in Veyon, its programming, artwork, testing or something like that, you're welcome to participate in the development of Veyon!
-
-Before starting the implementation of a new feature, please always open an issue at https://github.com/veyon/veyon/issues to start a discussion about your intended implementation. There may be different ideas, improvements, hints or maybe an already ongoing work on this feature.
-
-## Join translation team
-
-Veyon and its documentation are translated at the Transifex platform. Please go to https://app.transifex.com/veyon-solutions/veyon and join the corresponding translation team. Please DO NOT submit pull requests for modified translation files since this would require manual Transifex synchronizations on our side.
-
-## More information
-
-* https://veyon.io/
-* https://docs.veyon.io/
+Copyright (c) 2004-2026 Tobias Junghans / Veyon Solutions 및 CHECK NODE 기여자.
