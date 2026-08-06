@@ -71,7 +71,7 @@ else()
 endif()
 
 if(VEYON_BUILD_WINDOWS)
-	target_compile_definitions(veyon-core PUBLIC _WIN32_WINNT=0x0602)
+	target_compile_definitions(veyon-core PUBLIC _WIN32_WINNT=0x0A00)
 endif()
 
 if(WITH_PCH)

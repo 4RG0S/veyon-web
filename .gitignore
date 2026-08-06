@@ -4,3 +4,8 @@ svg
 Makefile
 plugins/addons
 plugins/extra
+
+# local build
+/build/
+/run/
+/deploy.sh

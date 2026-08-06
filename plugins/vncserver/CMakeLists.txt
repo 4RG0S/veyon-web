@@ -1,5 +1,5 @@
 if(VEYON_BUILD_WINDOWS)
-	add_subdirectory(ultravnc-builtin)
+	#add_subdirectory(ultravnc-builtin)
 endif()
 
 if(VEYON_BUILD_LINUX)
