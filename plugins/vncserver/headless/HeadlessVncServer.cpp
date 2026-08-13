@@ -121,15 +121,19 @@ bool HeadlessVncServer::initVncServer( int serverPort, const VncServerPluginInte
 		return false;
 	}
 
-	screen->passwords[0] = qstrdup( password.toByteArray().constData() );
+	Q_UNUSED(password)
 
 	rfbScreen->desktopName = "VeyonVNC";
 	rfbScreen->frameBuffer = reinterpret_cast<char *>( screen->framebuffer.bits() );
 	rfbScreen->port = serverPort;
 	rfbScreen->ipv6port = serverPort;
 
-	rfbScreen->authPasswdData = screen->passwords.data();
-	rfbScreen->passwordCheck = rfbCheckPasswordByList;
+	// only the local VncProxyConnection ever connects to this internal server, so
+	// bind to loopback and offer the "None" security type. The bundled
+	// libvncserver's VNC-auth (DES) is incompatible with veyon-core's client-side
+	// implementation in this build, which made the proxy fail "password check".
+	// The real authentication gate is the Veyon key/logon auth on the proxy port.
+	rfbScreen->listenInterface = htonl( INADDR_LOOPBACK );
 
 	rfbScreen->serverFormat.redShift = 16;
 	rfbScreen->serverFormat.greenShift = 8;

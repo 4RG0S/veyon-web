@@ -70,7 +70,10 @@ public:
 
 	Plugin::Flags flags() const override
 	{
-		return Plugin::NoFlags;
+		// act as the default VNC server on Windows: the builtin ultravnc server
+		// is removed in this fork, so without a default the server aborts with
+		// "no VNC server plugins found" unless VncServer/Plugin is set manually
+		return Plugin::ProvidesDefaultImplementation;
 	}
 
 	virtual QStringList supportedSessionTypes() const override

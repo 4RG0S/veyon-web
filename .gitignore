@@ -9,3 +9,5 @@ plugins/extra
 /build/
 /run/
 /deploy.sh
+/dist/
+/dist.sh
