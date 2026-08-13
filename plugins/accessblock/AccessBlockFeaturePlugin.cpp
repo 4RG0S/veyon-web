@@ -29,6 +29,7 @@
 
 AccessBlockFeaturePlugin::AccessBlockFeaturePlugin( QObject* parent ) :
 	QObject( parent ),
+	m_configuration( &VeyonCore::config() ),
 	m_accessBlockFeature( QStringLiteral( "AccessBlock" ),
 						  Feature::Flag::Mode | Feature::Flag::AllComponents,
 						  Feature::Uid( "dbeee12f-b78b-42cd-be9a-aec1fbd7fb2f" ),
@@ -45,8 +46,6 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 											   const QVariantMap& arguments,
 											   const ComputerControlInterfaceList& computerControlInterfaces )
 {
-	Q_UNUSED(arguments)
-
 	if( hasFeature( featureUid ) == false )
 	{
 		return false;
@@ -54,9 +53,18 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 
 	if( operation == Operation::Start )
 	{
-		// dummy payload just to verify the master->server message plumbing
+		// prefer explicit arguments (e.g. from veyon-cli or a dialog), otherwise
+		// fall back to the configured block lists (managed by the config page)
+		const auto urls = arguments.contains( argToString(Argument::BlockedUrls) )
+				? arguments.value( argToString(Argument::BlockedUrls) ).toStringList()
+				: m_configuration.blockedUrls();
+		const auto apps = arguments.contains( argToString(Argument::BlockedApps) )
+				? arguments.value( argToString(Argument::BlockedApps) ).toStringList()
+				: m_configuration.blockedApps();
+
 		sendFeatureMessage(FeatureMessage{featureUid, FeatureMessage::Command::Default}
-						   .addArgument(Argument::BlockedUrls, QStringList{ QStringLiteral("example.com") }),
+						   .addArgument(Argument::BlockedUrls, urls)
+						   .addArgument(Argument::BlockedApps, apps),
 						   computerControlInterfaces);
 
 		return true;
@@ -65,7 +73,8 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 	if( operation == Operation::Stop )
 	{
 		sendFeatureMessage(FeatureMessage{featureUid, FeatureMessage::Command::Default}
-						   .addArgument(Argument::BlockedUrls, QStringList{}),
+						   .addArgument(Argument::BlockedUrls, QStringList{})
+						   .addArgument(Argument::BlockedApps, QStringList{}),
 						   computerControlInterfaces);
 
 		return true;
@@ -89,13 +98,23 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& serve
 	}
 
 	const auto blockedUrls = message.argument( Argument::BlockedUrls ).toStringList();
-	const bool active = blockedUrls.isEmpty() == false;
+	const auto blockedApps = message.argument( Argument::BlockedApps ).toStringList();
+	const bool active = blockedUrls.isEmpty() == false || blockedApps.isEmpty() == false;
 
 	// default log level is Warning, so use vCritical() to make this visible
 	vCritical() << "SERVER: AccessBlock" << ( active ? "active" : "inactive" )
-				<< "blocked URLs:" << blockedUrls;
+				<< "URLs:" << blockedUrls << "apps:" << blockedApps;
 
-	// TODO: 실제 차단 로직
+	if( active )
+	{
+		m_urlBlocker.apply( blockedUrls );
+		m_processBlocker.apply( blockedApps );
+	}
+	else
+	{
+		m_urlBlocker.clear();
+		m_processBlocker.clear();
+	}
 
 	return true;
 }
@@ -109,3 +128,7 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worke
 
 	return false;
 }
+
+
+
+IMPLEMENT_CONFIG_PROXY(AccessBlockConfiguration)

@@ -24,7 +24,10 @@
 
 #pragma once
 
+#include "AccessBlockConfiguration.h"
 #include "FeatureProviderInterface.h"
+#include "ProcessBlocker.h"
+#include "UrlBlocker.h"
 
 class AccessBlockFeaturePlugin : public QObject, PluginInterface, FeatureProviderInterface
 {
@@ -87,7 +90,13 @@ public:
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
 
 private:
+	AccessBlockConfiguration m_configuration;
+
 	const Feature m_accessBlockFeature;
 	const FeatureList m_features;
+
+	// slave-side blocking engines (filled in by P1 / P2)
+	UrlBlocker m_urlBlocker;
+	ProcessBlocker m_processBlocker;
 
 };
