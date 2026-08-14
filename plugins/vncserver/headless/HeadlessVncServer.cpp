@@ -32,6 +32,7 @@ extern "C" {
 #include <QImage>
 
 #include "HeadlessVncServer.h"
+#include "ScreenCapture.h"
 #include "VeyonConfiguration.h"
 
 
@@ -45,6 +46,7 @@ struct HeadlessVncScreen
 	rfbScreenInfoPtr rfbScreen{nullptr};
 	std::array<char *, 2> passwords{};
 	QImage framebuffer;
+	ScreenCapture capture;
 
 };
 
@@ -88,6 +90,8 @@ bool HeadlessVncServer::runServer( int serverPort, const Password& password )
 	{
 		QThread::msleep( DefaultSleepTime );
 
+		handleScreenChanges( &screen );
+
 		rfbProcessEvents( screen.rfbScreen, 0 );
 	}
 
@@ -101,8 +105,32 @@ bool HeadlessVncServer::runServer( int serverPort, const Password& password )
 
 bool HeadlessVncServer::initScreen( HeadlessVncScreen* screen )
 {
-	screen->framebuffer = QImage( DefaultFramebufferWidth, DefaultFramebufferHeight, QImage::Format_RGB32 );
+	// size the framebuffer to the real screen so we can mirror it
+	const auto screenSize = screen->capture.screenSize();
+	const int width = screenSize.width() > 0 ? screenSize.width() : DefaultFramebufferWidth;
+	const int height = screenSize.height() > 0 ? screenSize.height() : DefaultFramebufferHeight;
+
+	screen->framebuffer = QImage( width, height, QImage::Format_RGB32 );
 	screen->framebuffer.fill( m_configuration.backgroundColor() );
+
+	return true;
+}
+
+
+
+bool HeadlessVncServer::handleScreenChanges( HeadlessVncScreen* screen )
+{
+	const int width = screen->framebuffer.width();
+	const int height = screen->framebuffer.height();
+
+	// grab the live desktop straight into the framebuffer memory
+	if( screen->capture.grab( screen->framebuffer.bits(), width, height ) == false )
+	{
+		return false;
+	}
+
+	// TODO: 손상영역 추적으로 최적화 (지금은 매 프레임 전체 갱신)
+	rfbMarkRectAsModified( screen->rfbScreen, 0, 0, width, height );
 
 	return true;
 }
