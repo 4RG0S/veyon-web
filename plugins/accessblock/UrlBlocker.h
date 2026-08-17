@@ -24,14 +24,20 @@
 
 #pragma once
 
+#include <QObject>
 #include <QStringList>
+#include <QTimer>
+#include <QVector>
 
 // OWNER: P1 (web/URL blocking).
-// Implement apply()/clear() using the browser URLBlocklist policy registry
-// (and/or the hosts file). See docs/team/P1-web-blocking.CLAUDE.md.
-class UrlBlocker
+// Exact domains are blocked for all applications through Windows Filtering
+// Platform. URL patterns containing a scheme or path use browser policy.
+class UrlBlocker : public QObject
 {
 public:
+	explicit UrlBlocker( QObject* parent = nullptr );
+	~UrlBlocker() override;
+
 	// Apply URL blocking for the given list, replacing any previously applied
 	// set. An empty list is equivalent to clear().
 	void apply( const QStringList& urls );
@@ -40,6 +46,15 @@ public:
 	void clear();
 
 private:
-	QStringList m_blockedUrls;
+	void applyNetworkFilters();
+	void clearNetworkFilters();
+	void applyBrowserPolicies( const QStringList& urls );
+	void clearBrowserPolicies();
+
+	QStringList m_blockedDomains;
+	QStringList m_blockedBrowserUrls;
+	QVector<quint64> m_filterIds;
+	QTimer m_refreshTimer;
+	void* m_filterEngine{};
 
 };

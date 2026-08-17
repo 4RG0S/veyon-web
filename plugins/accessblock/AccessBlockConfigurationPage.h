@@ -44,13 +44,17 @@ public:
 
 private:
 	static QStringList listContents( const QListWidget* listWidget );
-	void addUrl();
+	static bool isNetworkDomain( const QString& value );
+	void addDomain();
+	void addBrowserUrl();
 	void addApp();
 	void removeSelectedItems( QListWidget* listWidget );
 
 	AccessBlockConfiguration& m_configuration;
-	QListWidget* m_urlList;
-	QLineEdit* m_urlInput;
+	QListWidget* m_domainList;
+	QLineEdit* m_domainInput;
+	QListWidget* m_browserUrlList;
+	QLineEdit* m_browserUrlInput;
 	QListWidget* m_appList;
 	QLineEdit* m_appInput;
 };

@@ -14,5 +14,5 @@ build_veyon_plugin(accessblock
 	ProcessBlocker.h)
 
 if(WIN32)
-	target_link_libraries(accessblock PRIVATE -ladvapi32)
+	target_link_libraries(accessblock PRIVATE -ladvapi32 -lfwpuclnt -lrpcrt4)
 endif()
