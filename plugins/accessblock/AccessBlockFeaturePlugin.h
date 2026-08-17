@@ -25,15 +25,16 @@
 #pragma once
 
 #include "AccessBlockConfiguration.h"
+#include "ConfigurationPagePluginInterface.h"
 #include "FeatureProviderInterface.h"
 #include "ProcessBlocker.h"
 #include "UrlBlocker.h"
 
-class AccessBlockFeaturePlugin : public QObject, PluginInterface, FeatureProviderInterface
+class AccessBlockFeaturePlugin : public QObject, PluginInterface, FeatureProviderInterface, ConfigurationPagePluginInterface
 {
 	Q_OBJECT
 	Q_PLUGIN_METADATA(IID "io.veyon.Veyon.Plugins.AccessBlock")
-	Q_INTERFACES(PluginInterface FeatureProviderInterface)
+	Q_INTERFACES(PluginInterface FeatureProviderInterface ConfigurationPagePluginInterface)
 public:
 	enum class Argument
 	{
@@ -88,6 +89,8 @@ public:
 							   const FeatureMessage& message ) override;
 
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
+
+	ConfigurationPage* createConfigurationPage() override;
 
 private:
 	AccessBlockConfiguration m_configuration;

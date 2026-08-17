@@ -23,6 +23,7 @@
  */
 
 #include "AccessBlockFeaturePlugin.h"
+#include "AccessBlockConfigurationPage.h"
 #include "ComputerControlInterface.h"
 #include "VeyonServerInterface.h"
 
@@ -127,6 +128,13 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worke
 	Q_UNUSED(message)
 
 	return false;
+}
+
+
+
+ConfigurationPage* AccessBlockFeaturePlugin::createConfigurationPage()
+{
+	return new AccessBlockConfigurationPage( m_configuration );
 }
 
 

@@ -1,5 +1,5 @@
 /*
- * ProcessBlocker.h - blocks execution of programs on the local (slave) machine
+ * AccessBlockConfigurationPage.h - declaration of AccessBlockConfigurationPage class
  *
  * Copyright (c) 2026 CHECK NODE contributors
  *
@@ -24,31 +24,33 @@
 
 #pragma once
 
-#include <QObject>
-#include <QStringList>
-#include <QTimer>
+#include "ConfigurationPage.h"
 
-// OWNER: P2 (process/program blocking).
-// Implement apply()/clear() using process monitoring
-// (CreateToolhelp32Snapshot + TerminateProcess, polled via a QTimer)
-// and/or IFEO registry. See docs/team/P2-process-blocking.CLAUDE.md.
-class ProcessBlocker : public QObject
+#include <QStringList>
+
+class AccessBlockConfiguration;
+class QLineEdit;
+class QListWidget;
+
+class AccessBlockConfigurationPage : public ConfigurationPage
 {
 	Q_OBJECT
 public:
-	explicit ProcessBlocker( QObject* parent = nullptr );
+	explicit AccessBlockConfigurationPage( AccessBlockConfiguration& configuration, QWidget* parent = nullptr );
 
-	// Start blocking the given programs, replacing any previously blocked set.
-	// An empty list is equivalent to clear().
-	void apply( const QStringList& apps );
-
-	// Stop all process blocking started by this class.
-	void clear();
+	void resetWidgets() override;
+	void connectWidgetsToProperties() override;
+	void applyConfiguration() override;
 
 private:
-	void pollProcesses();
+	static QStringList listContents( const QListWidget* listWidget );
+	void addUrl();
+	void addApp();
+	void removeSelectedItems( QListWidget* listWidget );
 
-	QStringList m_blockedApps;
-	QTimer m_pollTimer;
-
+	AccessBlockConfiguration& m_configuration;
+	QListWidget* m_urlList;
+	QLineEdit* m_urlInput;
+	QListWidget* m_appList;
+	QLineEdit* m_appInput;
 };

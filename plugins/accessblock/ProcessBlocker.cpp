@@ -25,35 +25,104 @@
 #include "ProcessBlocker.h"
 #include "VeyonCore.h"
 
+#include <QFileInfo>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <tlhelp32.h>
+#endif
+
 
 ProcessBlocker::ProcessBlocker( QObject* parent ) :
 	QObject( parent )
 {
+	m_pollTimer.setInterval( 1000 );
+	connect( &m_pollTimer, &QTimer::timeout, this, &ProcessBlocker::pollProcesses );
 }
 
 
 
 void ProcessBlocker::apply( const QStringList& apps )
 {
-	m_blockedApps = apps;
+	QStringList normalizedApps;
+	for( const auto& app : apps )
+	{
+		const auto executableName = QFileInfo( app.trimmed() ).fileName();
+		if( executableName.isEmpty() == false &&
+			normalizedApps.contains( executableName, Qt::CaseInsensitive ) == false )
+		{
+			normalizedApps.append( executableName );
+		}
+	}
 
-	// default log level is Warning, so use vCritical() to make this visible
-	vCritical() << "ProcessBlocker: apply" << apps;
+	if( normalizedApps.isEmpty() )
+	{
+		clear();
+		return;
+	}
 
-	// TODO(P2): 실제 프로세스 차단
-	//  - QTimer 주기 폴링으로 CreateToolhelp32Snapshot 열거
-	//  - 매칭되는 프로세스 OpenProcess(PROCESS_TERMINATE) -> TerminateProcess
-	//  - (대안) IFEO 레지스트리로 실행 자체 차단
-	//  타 세션 프로세스 종료엔 서비스(SYSTEM) 권한 필요.
+	m_blockedApps = normalizedApps;
+	m_pollTimer.start();
+	pollProcesses();
+	vCritical() << "ProcessBlocker: monitoring applications:" << m_blockedApps;
 }
 
 
 
 void ProcessBlocker::clear()
 {
-	vCritical() << "ProcessBlocker: clear";
-
+	m_pollTimer.stop();
 	m_blockedApps.clear();
+	vCritical() << "ProcessBlocker: monitoring stopped";
+}
 
-	// TODO(P2): 감시 중단 (QTimer 정지) 및 IFEO 등 적용분 원복
+
+
+void ProcessBlocker::pollProcesses()
+{
+#ifdef Q_OS_WIN
+	const auto snapshot = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
+	if( snapshot == INVALID_HANDLE_VALUE )
+	{
+		vCritical() << "ProcessBlocker: failed to enumerate processes:" << GetLastError();
+		return;
+	}
+
+	PROCESSENTRY32W processEntry{};
+	processEntry.dwSize = sizeof( processEntry );
+	if( Process32FirstW( snapshot, &processEntry ) )
+	{
+		do
+		{
+			const auto executableName = QString::fromWCharArray( processEntry.szExeFile );
+			if( m_blockedApps.contains( executableName, Qt::CaseInsensitive ) )
+			{
+				const auto process = OpenProcess( PROCESS_TERMINATE, FALSE, processEntry.th32ProcessID );
+				if( process != nullptr )
+				{
+					if( TerminateProcess( process, 1 ) )
+					{
+						vCritical() << "ProcessBlocker: terminated" << executableName
+									<< "PID" << processEntry.th32ProcessID;
+					}
+					else
+					{
+						vCritical() << "ProcessBlocker: failed to terminate" << executableName
+									<< "PID" << processEntry.th32ProcessID << "error" << GetLastError();
+					}
+					CloseHandle( process );
+				}
+				else
+				{
+					vCritical() << "ProcessBlocker: cannot open" << executableName
+								<< "PID" << processEntry.th32ProcessID << "error" << GetLastError();
+				}
+			}
+		}
+		while( Process32NextW( snapshot, &processEntry ) );
+	}
+
+	CloseHandle( snapshot );
+#endif
+
 }
