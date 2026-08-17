@@ -28,6 +28,7 @@ extern "C" {
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 
 #include <QImage>
 
@@ -46,6 +47,7 @@ struct HeadlessVncScreen
 	rfbScreenInfoPtr rfbScreen{nullptr};
 	std::array<char *, 2> passwords{};
 	QImage framebuffer;
+	QImage previousFrame;   // last frame sent, for damage tracking
 	ScreenCapture capture;
 
 };
@@ -129,10 +131,51 @@ bool HeadlessVncServer::handleScreenChanges( HeadlessVncScreen* screen )
 		return false;
 	}
 
-	// TODO: 손상영역 추적으로 최적화 (지금은 매 프레임 전체 갱신)
-	rfbMarkRectAsModified( screen->rfbScreen, 0, 0, width, height );
+	const auto& current = screen->framebuffer;
+	auto& previous = screen->previousFrame;
 
-	return true;
+	// first frame (or a resolution change): send the whole screen once
+	if( previous.size() != current.size() )
+	{
+		previous = current.copy();
+		rfbMarkRectAsModified( screen->rfbScreen, 0, 0, width, height );
+		return true;
+	}
+
+	// damage tracking: only mark runs of rows that actually changed, so a
+	// mostly-static desktop re-encodes just the moving parts (real-time feel)
+	const size_t bytesPerLine = static_cast<size_t>( width ) * 4;
+	int runStart = -1;
+	bool anyChange = false;
+
+	for( int y = 0; y < height; ++y )
+	{
+		const bool rowChanged =
+			memcmp( current.constScanLine( y ), previous.constScanLine( y ), bytesPerLine ) != 0;
+
+		if( rowChanged && runStart < 0 )
+		{
+			runStart = y;
+		}
+		else if( rowChanged == false && runStart >= 0 )
+		{
+			rfbMarkRectAsModified( screen->rfbScreen, 0, runStart, width, y );
+			runStart = -1;
+			anyChange = true;
+		}
+	}
+	if( runStart >= 0 )
+	{
+		rfbMarkRectAsModified( screen->rfbScreen, 0, runStart, width, height );
+		anyChange = true;
+	}
+
+	if( anyChange )
+	{
+		previous = current.copy();
+	}
+
+	return anyChange;
 }
 
 
