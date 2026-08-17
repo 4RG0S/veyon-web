@@ -32,6 +32,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 
@@ -84,14 +85,19 @@ AccessBlockConfigurationPage::AccessBlockConfigurationPage( AccessBlockConfigura
 	connect( addAppButton, &QPushButton::clicked, this, &AccessBlockConfigurationPage::addApp );
 	connect( m_appInput, &QLineEdit::returnPressed, this, &AccessBlockConfigurationPage::addApp );
 	connect( removeAppButton, &QPushButton::clicked, this, [this]() { removeSelectedItems( m_appList ); } );
-	connect( m_urlList, &QListWidget::itemChanged, this, &AccessBlockConfigurationPage::widgetsChanged );
-	connect( m_appList, &QListWidget::itemChanged, this, &AccessBlockConfigurationPage::widgetsChanged );
+	connect( m_urlList, &QListWidget::itemChanged, this, &AccessBlockConfigurationPage::applyConfiguration );
+	connect( m_appList, &QListWidget::itemChanged, this, &AccessBlockConfigurationPage::applyConfiguration );
 }
 
 
 
 void AccessBlockConfigurationPage::resetWidgets()
 {
+	// block signals while populating so loading the page does not mark the
+	// configuration dirty / enable Apply before the user changes anything
+	const QSignalBlocker urlBlocker( m_urlList );
+	const QSignalBlocker appBlocker( m_appList );
+
 	m_urlList->clear();
 	m_urlList->addItems( m_configuration.blockedUrls() );
 	m_appList->clear();
@@ -147,7 +153,7 @@ void AccessBlockConfigurationPage::addUrl()
 		auto item = new QListWidgetItem( url, m_urlList );
 		item->setFlags( item->flags() | Qt::ItemIsEditable );
 		m_urlInput->clear();
-		Q_EMIT widgetsChanged();
+		applyConfiguration();
 	}
 }
 
@@ -161,7 +167,7 @@ void AccessBlockConfigurationPage::addApp()
 		auto item = new QListWidgetItem( app, m_appList );
 		item->setFlags( item->flags() | Qt::ItemIsEditable );
 		m_appInput->clear();
-		Q_EMIT widgetsChanged();
+		applyConfiguration();
 	}
 }
 
@@ -177,6 +183,6 @@ void AccessBlockConfigurationPage::removeSelectedItems( QListWidget* listWidget 
 
 	if( selectedItems.isEmpty() == false )
 	{
-		Q_EMIT widgetsChanged();
+		applyConfiguration();
 	}
 }
