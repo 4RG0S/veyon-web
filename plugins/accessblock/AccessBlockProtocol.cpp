@@ -77,9 +77,10 @@ FeatureMessage AccessBlockProtocol::makeMessage( Command command,
 	envelope.insert( PayloadKey, payloadBytes );
 	envelope.insert( RequestedAtUtcKey, QDateTime::currentDateTimeUtc().toString( Qt::ISODateWithMs ) );
 
-	return FeatureMessage{policyV2FeatureUid(), command}
-			.addArgument( EnvelopeArgument,
-						  QCborValue( envelope ).toCbor( QCborValue::SortKeysInMaps ) );
+	FeatureMessage message{policyV2FeatureUid(), command};
+	message.addArgument( EnvelopeArgument,
+					 QCborValue( envelope ).toCbor( QCborValue::SortKeysInMaps ) );
+	return FeatureMessage{message};
 }
 
 
@@ -181,7 +182,7 @@ bool AccessBlockProtocol::decode( const FeatureMessage& message, Envelope* envel
 	}
 
 	QCborParserError payloadParserError;
-	const auto payload = QCborValue::fromCbor( envelope->payloadBytes, &payloadParserError );
+	auto payload = QCborValue::fromCbor( envelope->payloadBytes, &payloadParserError );
 	if( payloadParserError.error != QCborError::NoError ||
 		payloadParserError.offset != envelope->payloadBytes.size() || payload.isMap() == false )
 	{
