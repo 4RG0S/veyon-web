@@ -48,6 +48,7 @@ public:
 private:
 	void applyNetworkFilters();
 	void clearNetworkFilters();
+	void closeNetworkEngine();
 	void applyBrowserPolicies( const QStringList& urls );
 	void clearBrowserPolicies();
 

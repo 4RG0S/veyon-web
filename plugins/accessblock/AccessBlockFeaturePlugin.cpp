@@ -33,11 +33,15 @@ AccessBlockFeaturePlugin::AccessBlockFeaturePlugin( QObject* parent ) :
 	m_configuration( &VeyonCore::config() ),
 	m_accessBlockFeature( QStringLiteral( "AccessBlock" ),
 						  Feature::Flag::Mode | Feature::Flag::AllComponents,
-						  Feature::Uid( "dbeee12f-b78b-42cd-be9a-aec1fbd7fb2f" ),
+						  AccessBlockProtocol::legacyFeatureUid(),
 						  Feature::Uid(),
 						  tr( "Block access" ), tr( "Unblock access" ),
 						  tr( "Block access to certain URLs and applications on all computers." ) ),
-	m_features( { m_accessBlockFeature } )
+	m_accessBlockV2Feature( QStringLiteral( "AccessBlockPolicyV2" ),
+							Feature::Flag::Meta | Feature::Flag::AllComponents,
+							AccessBlockProtocol::policyV2FeatureUid(),
+							Feature::Uid(), {}, {}, {} ),
+	m_features( { m_accessBlockFeature, m_accessBlockV2Feature } )
 {
 }
 
@@ -47,7 +51,7 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 											   const QVariantMap& arguments,
 											   const ComputerControlInterfaceList& computerControlInterfaces )
 {
-	if( hasFeature( featureUid ) == false )
+	if( featureUid != m_accessBlockFeature.uid() )
 	{
 		return false;
 	}
@@ -67,6 +71,15 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 						   .addArgument(Argument::BlockedUrls, urls)
 						   .addArgument(Argument::BlockedApps, apps),
 						   computerControlInterfaces);
+		const auto query = AccessBlockProtocol::makeMessage(
+				AccessBlockProtocol::Command::QueryCapabilities );
+		AccessBlockProtocol::Envelope queryEnvelope;
+		AccessBlockProtocol::decode( query, &queryEnvelope, nullptr );
+		for( const auto& computerControlInterface : computerControlInterfaces )
+		{
+			computerControlInterface->setProperty( "accessBlockV2PendingCommandId", queryEnvelope.commandId );
+		}
+		sendFeatureMessage( query, computerControlInterfaces );
 
 		return true;
 	}
@@ -77,6 +90,15 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 						   .addArgument(Argument::BlockedUrls, QStringList{})
 						   .addArgument(Argument::BlockedApps, QStringList{}),
 						   computerControlInterfaces);
+		const auto query = AccessBlockProtocol::makeMessage(
+				AccessBlockProtocol::Command::QueryCapabilities );
+		AccessBlockProtocol::Envelope queryEnvelope;
+		AccessBlockProtocol::decode( query, &queryEnvelope, nullptr );
+		for( const auto& computerControlInterface : computerControlInterfaces )
+		{
+			computerControlInterface->setProperty( "accessBlockV2PendingCommandId", queryEnvelope.commandId );
+		}
+		sendFeatureMessage( query, computerControlInterfaces );
 
 		return true;
 	}
@@ -90,12 +112,79 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& serve
 													 const MessageContext& messageContext,
 													 const FeatureMessage& message )
 {
-	Q_UNUSED(server)
-	Q_UNUSED(messageContext)
+	if( message.featureUid() == m_accessBlockV2Feature.uid() )
+	{
+		AccessBlockProtocol::Envelope envelope;
+		QString decodeError;
+		if( AccessBlockProtocol::decode( message, &envelope, &decodeError ) == false )
+		{
+			QCborMap payload;
+			payload.insert( QStringLiteral("state"), QStringLiteral("Rejected") );
+			payload.insert( QStringLiteral("reason"), QStringLiteral("InvalidEnvelope") );
+			return server.sendFeatureMessageReply(
+					messageContext,
+					AccessBlockProtocol::makeMessage( AccessBlockProtocol::Command::Rejected, payload ) );
+		}
+
+		switch( message.command<AccessBlockProtocol::Command>() )
+		{
+		case AccessBlockProtocol::Command::QueryCapabilities:
+		{
+			QCborMap payload;
+			payload.insert( QStringLiteral("state"), QStringLiteral("LegacyCompatibility") );
+			payload.insert( QStringLiteral("machineSingletonBroker"), false );
+			payload.insert( QStringLiteral("policyMutationV2"), false );
+			payload.insert( QStringLiteral("browserPolicyWrittenVerified"), false );
+			#ifdef Q_OS_WIN
+			payload.insert( QStringLiteral("resolvedDomainNetworkBestEffort"), true );
+			payload.insert( QStringLiteral("processContainment"), QStringLiteral("SnapshotWeakLatency") );
+			#else
+			payload.insert( QStringLiteral("resolvedDomainNetworkBestEffort"), false );
+			payload.insert( QStringLiteral("processContainment"), QStringLiteral("Unsupported") );
+			#endif
+			return server.sendFeatureMessageReply(
+					messageContext,
+					AccessBlockProtocol::makeMessage(
+							AccessBlockProtocol::Command::CapabilitiesResult, payload, &envelope ) );
+		}
+		case AccessBlockProtocol::Command::QueryStatus:
+		{
+			QCborMap payload;
+			payload.insert( QStringLiteral("state"), QStringLiteral("LegacyUnverified") );
+			payload.insert( QStringLiteral("desiredRevision"), 0 );
+			payload.insert( QStringLiteral("managedAppliedHash"), QByteArray{} );
+			return server.sendFeatureMessageReply(
+					messageContext,
+					AccessBlockProtocol::makeMessage(
+							AccessBlockProtocol::Command::StatusResult, payload, &envelope ) );
+		}
+		default:
+		{
+			QCborMap payload;
+			payload.insert( QStringLiteral("state"), QStringLiteral("Rejected") );
+			payload.insert( QStringLiteral("reason"), QStringLiteral("BrokerNotReady") );
+			payload.insert( QStringLiteral("detail"),
+							QStringLiteral("V2 mutation is disabled until singleton broker cutover") );
+			return server.sendFeatureMessageReply(
+					messageContext,
+					AccessBlockProtocol::makeMessage(
+							AccessBlockProtocol::Command::Rejected, payload, &envelope ) );
+		}
+		}
+	}
 
 	if( message.featureUid() != m_accessBlockFeature.uid() )
 	{
 		return false;
+	}
+	if( message.command<FeatureMessage::Command>() != FeatureMessage::Command::Default ||
+		message.hasArgument( Argument::BlockedUrls ) == false ||
+		message.hasArgument( Argument::BlockedApps ) == false ||
+		message.argument( Argument::BlockedUrls ).userType() != QMetaType::QStringList ||
+		message.argument( Argument::BlockedApps ).userType() != QMetaType::QStringList )
+	{
+		vWarning() << "AccessBlock: rejected malformed legacy message";
+		return true;
 	}
 
 	const auto blockedUrls = message.argument( Argument::BlockedUrls ).toStringList();
@@ -104,7 +193,8 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& serve
 
 	// default log level is Warning, so use vCritical() to make this visible
 	vCritical() << "SERVER: AccessBlock" << ( active ? "active" : "inactive" )
-				<< "URLs:" << blockedUrls << "apps:" << blockedApps;
+				<< "URL rule count:" << blockedUrls.size()
+				<< "application rule count:" << blockedApps.size();
 
 	if( active )
 	{
@@ -117,6 +207,54 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& serve
 		m_processBlocker.clear();
 	}
 
+	return true;
+}
+
+
+
+bool AccessBlockFeaturePlugin::handleFeatureMessage(
+		ComputerControlInterface::Pointer computerControlInterface,
+		const FeatureMessage& message )
+{
+	if( message.featureUid() != m_accessBlockV2Feature.uid() || computerControlInterface.isNull() )
+	{
+		return false;
+	}
+
+	AccessBlockProtocol::Envelope envelope;
+	QString decodeError;
+	if( AccessBlockProtocol::decode( message, &envelope, &decodeError ) == false )
+	{
+		computerControlInterface->setProperty( "accessBlockV2LastError", decodeError );
+		return true;
+	}
+	const auto command = message.command<AccessBlockProtocol::Command>();
+	if( command != AccessBlockProtocol::Command::Accepted &&
+		command != AccessBlockProtocol::Command::ApplyResult &&
+		command != AccessBlockProtocol::Command::StatusResult &&
+		command != AccessBlockProtocol::Command::Rejected &&
+		command != AccessBlockProtocol::Command::CapabilitiesResult )
+	{
+		computerControlInterface->setProperty(
+				"accessBlockV2LastError", QStringLiteral("unexpected request command from server") );
+		return true;
+	}
+	const auto pendingCommandId = computerControlInterface->property(
+			"accessBlockV2PendingCommandId" ).toUuid();
+	if( pendingCommandId.isNull() || pendingCommandId != envelope.commandId )
+	{
+		computerControlInterface->setProperty(
+				"accessBlockV2LastError", QStringLiteral("uncorrelated or stale response") );
+		return true;
+	}
+
+	computerControlInterface->setProperty( "accessBlockV2LastCommand",
+									 static_cast<int>( command ) );
+	computerControlInterface->setProperty( "accessBlockV2LastCommandId", envelope.commandId );
+	computerControlInterface->setProperty( "accessBlockV2LastPayload",
+									 QVariant::fromValue( envelope.payload.toVariantMap() ) );
+	computerControlInterface->setProperty( "accessBlockV2LastError", QVariant{} );
+	computerControlInterface->setProperty( "accessBlockV2PendingCommandId", QVariant{} );
 	return true;
 }
 

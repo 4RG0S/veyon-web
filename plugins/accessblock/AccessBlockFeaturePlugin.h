@@ -25,6 +25,7 @@
 #pragma once
 
 #include "AccessBlockConfiguration.h"
+#include "AccessBlockProtocol.h"
 #include "ConfigurationPagePluginInterface.h"
 #include "FeatureProviderInterface.h"
 #include "ProcessBlocker.h"
@@ -87,6 +88,8 @@ public:
 	bool handleFeatureMessage( VeyonServerInterface& server,
 							   const MessageContext& messageContext,
 							   const FeatureMessage& message ) override;
+	bool handleFeatureMessage( ComputerControlInterface::Pointer computerControlInterface,
+							   const FeatureMessage& message ) override;
 
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
 
@@ -96,9 +99,11 @@ private:
 	AccessBlockConfiguration m_configuration;
 
 	const Feature m_accessBlockFeature;
+	const Feature m_accessBlockV2Feature;
 	const FeatureList m_features;
 
-	// slave-side blocking engines (filled in by P1 / P2)
+	// Legacy compatibility engines. V2 mutation remains disabled until the
+	// machine-singleton broker owns these backends.
 	UrlBlocker m_urlBlocker;
 	ProcessBlocker m_processBlocker;
 

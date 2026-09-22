@@ -5,6 +5,8 @@ build_veyon_plugin(accessblock
 	SOURCES
 	AccessBlockFeaturePlugin.cpp
 	AccessBlockFeaturePlugin.h
+	AccessBlockProtocol.cpp
+	AccessBlockProtocol.h
 	AccessBlockConfiguration.h
 	AccessBlockConfigurationPage.cpp
 	AccessBlockConfigurationPage.h
@@ -15,4 +17,9 @@ build_veyon_plugin(accessblock
 
 if(WIN32)
 	target_link_libraries(accessblock PRIVATE -ladvapi32 -lfwpuclnt -lrpcrt4)
+endif()
+
+test_veyon_plugin(accessblock AccessBlockProtocolTest)
+if(WITH_TESTS)
+	target_link_libraries(AccessBlockProtocolTest PRIVATE Qt${QT_MAJOR_VERSION}::Test)
 endif()

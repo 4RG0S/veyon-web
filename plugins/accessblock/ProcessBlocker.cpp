@@ -28,6 +28,8 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 
+#include <string>
+
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <tlhelp32.h>
@@ -38,6 +40,9 @@ namespace
 {
 
 constexpr auto PollInterval = 1000;
+#ifdef Q_OS_WIN
+constexpr DWORD TerminationWaitTimeout = 500;
+#endif
 
 
 QString normalizedExecutableName( const QString& app )
@@ -79,6 +84,15 @@ bool isProtectedExecutableName( const QString& executableName )
 
 
 #ifdef Q_OS_WIN
+struct ProcessIdentity
+{
+	DWORD processId{};
+	DWORD sessionId{};
+	FILETIME creationTime{};
+	QString executableName;
+};
+
+
 class ScopedHandle
 {
 public:
@@ -114,12 +128,51 @@ private:
 };
 
 
-bool isProtectedProcess( DWORD processId, const QString& executableName )
+bool resolveProcessIdentity( HANDLE process,
+							 DWORD snapshotProcessId,
+							 const QString& snapshotExecutableName,
+							 ProcessIdentity* identity )
 {
-	return processId == 0 ||
-			processId == 4 ||
-			processId == GetCurrentProcessId() ||
-			isProtectedExecutableName( executableName );
+	if( process == nullptr || identity == nullptr || GetProcessId( process ) != snapshotProcessId )
+	{
+		return false;
+	}
+
+	FILETIME exitTime{};
+	FILETIME kernelTime{};
+	FILETIME userTime{};
+	if( GetProcessTimes( process, &identity->creationTime, &exitTime, &kernelTime, &userTime ) == FALSE )
+	{
+		return false;
+	}
+
+	std::wstring imagePath( 32768, L'\0' );
+	DWORD imagePathSize = static_cast<DWORD>( imagePath.size() );
+	if( QueryFullProcessImageNameW( process, 0, imagePath.data(), &imagePathSize ) == FALSE )
+	{
+		return false;
+	}
+	imagePath.resize( imagePathSize );
+
+	identity->processId = snapshotProcessId;
+	identity->executableName = normalizedExecutableName( QString::fromStdWString( imagePath ) );
+	if( identity->executableName != snapshotExecutableName ||
+		ProcessIdToSessionId( snapshotProcessId, &identity->sessionId ) == FALSE )
+	{
+		return false;
+	}
+
+	return true;
+}
+
+
+bool isProtectedProcess( const ProcessIdentity& identity )
+{
+	return identity.processId == 0 ||
+			identity.processId == 4 ||
+			identity.processId == GetCurrentProcessId() ||
+			identity.sessionId == 0 ||
+			isProtectedExecutableName( identity.executableName );
 }
 #endif
 
@@ -158,7 +211,7 @@ void ProcessBlocker::apply( const QStringList& apps )
 	m_blockedApps = normalizedApps;
 	m_pollTimer.start();
 	pollProcesses();
-	vCritical() << "ProcessBlocker: monitoring applications:" << m_blockedApps;
+	vCritical() << "ProcessBlocker: monitoring" << m_blockedApps.size() << "application rules";
 }
 
 
@@ -190,15 +243,45 @@ void ProcessBlocker::pollProcesses()
 		{
 			const auto executableName = normalizedExecutableName( QString::fromWCharArray( processEntry.szExeFile ) );
 			if( m_blockedApps.contains( executableName ) &&
-				isProtectedProcess( processEntry.th32ProcessID, executableName ) == false )
+				processEntry.th32ProcessID != 0 &&
+				processEntry.th32ProcessID != 4 &&
+				processEntry.th32ProcessID != GetCurrentProcessId() )
 			{
-				const ScopedHandle process{OpenProcess( PROCESS_TERMINATE, FALSE, processEntry.th32ProcessID )};
+				const ScopedHandle process{OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION |
+													PROCESS_TERMINATE | SYNCHRONIZE,
+												FALSE, processEntry.th32ProcessID )};
 				if( process )
 				{
+					ProcessIdentity identity;
+					if( resolveProcessIdentity( process.get(), processEntry.th32ProcessID,
+										   executableName, &identity ) == false )
+					{
+						vWarning() << "ProcessBlocker: identity changed or could not be verified for PID"
+								   << processEntry.th32ProcessID;
+						continue;
+					}
+
+					if( isProtectedProcess( identity ) )
+					{
+						vWarning() << "ProcessBlocker: refusing to terminate protected process PID"
+								   << identity.processId;
+						continue;
+					}
+
 					if( TerminateProcess( process.get(), 0 ) )
 					{
-						vCritical() << "ProcessBlocker: terminated" << executableName
-									<< "PID" << processEntry.th32ProcessID;
+						const auto waitResult = WaitForSingleObject( process.get(), TerminationWaitTimeout );
+						if( waitResult == WAIT_OBJECT_0 )
+						{
+							vCritical() << "ProcessBlocker: terminated" << executableName
+										<< "PID" << identity.processId;
+						}
+						else
+						{
+							vCritical() << "ProcessBlocker: termination was not confirmed for PID"
+										<< identity.processId << "wait result" << waitResult
+										<< "error" << ( waitResult == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT );
+						}
 					}
 					else
 					{

@@ -28,10 +28,8 @@
 #include <QStringList>
 #include <QTimer>
 
-// OWNER: P2 (process/program blocking).
-// Implement apply()/clear() using process monitoring
-// (CreateToolhelp32Snapshot + TerminateProcess, polled via a QTimer)
-// and/or IFEO registry. See docs/team/P2-process-blocking.CLAUDE.md.
+// Legacy containment backend. It intentionally remains a snapshot reconciler:
+// the v2 capability layer must not advertise it as execution prevention.
 class ProcessBlocker : public QObject
 {
 	Q_OBJECT

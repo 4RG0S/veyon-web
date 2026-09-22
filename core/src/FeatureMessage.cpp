@@ -100,9 +100,18 @@ bool FeatureMessage::receive( QIODevice* ioDevice )
 
 QDebug operator<<(QDebug stream, const FeatureMessage& message)
 {
+	auto redactedArguments = message.arguments();
+	for( auto it = redactedArguments.begin(); it != redactedArguments.end(); ++it )
+	{
+		if( it.value().userType() == QMetaType::QByteArray )
+		{
+			it.value() = QStringLiteral("<%1 bytes>").arg( it.value().toByteArray().size() );
+		}
+	}
+
 	stream << QStringLiteral("FeatureMessage(%1,%2,%3)")
 				  .arg(VeyonCore::featureManager().feature(message.featureUid()).name())
 				  .arg(FeatureMessage::CommandType(message.command()))
-				  .arg(VeyonCore::stringify(message.arguments())).toUtf8().constData();
+				  .arg(VeyonCore::stringify(redactedArguments)).toUtf8().constData();
 	return stream;
 }
