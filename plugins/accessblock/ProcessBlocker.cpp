@@ -25,6 +25,7 @@
 #include "ProcessBlocker.h"
 #include "VeyonCore.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
 
 #ifdef Q_OS_WIN
@@ -33,10 +34,102 @@
 #endif
 
 
+namespace
+{
+
+constexpr auto PollInterval = 1000;
+
+
+QString normalizedExecutableName( const QString& app )
+{
+	return QFileInfo( app.trimmed() ).fileName().toCaseFolded();
+}
+
+
+bool isProtectedExecutableName( const QString& executableName )
+{
+	static const QStringList protectedExecutableNames{
+		QStringLiteral( "idle" ),
+		QStringLiteral( "system" ),
+		QStringLiteral( "registry" ),
+		QStringLiteral( "smss.exe" ),
+		QStringLiteral( "csrss.exe" ),
+		QStringLiteral( "wininit.exe" ),
+		QStringLiteral( "winlogon.exe" ),
+		QStringLiteral( "services.exe" ),
+		QStringLiteral( "lsass.exe" ),
+		QStringLiteral( "svchost.exe" ),
+		QStringLiteral( "fontdrvhost.exe" ),
+		QStringLiteral( "dwm.exe" ),
+		QStringLiteral( "veyon-cli.exe" ),
+		QStringLiteral( "veyon-configurator.exe" ),
+		QStringLiteral( "veyon-master.exe" ),
+		QStringLiteral( "veyon-server.exe" ),
+		QStringLiteral( "veyon-service.exe" ),
+		QStringLiteral( "veyon-worker.exe" ),
+	};
+
+	if( protectedExecutableNames.contains( executableName ) )
+	{
+		return true;
+	}
+
+	return executableName == normalizedExecutableName( QCoreApplication::applicationFilePath() );
+}
+
+
+#ifdef Q_OS_WIN
+class ScopedHandle
+{
+public:
+	explicit ScopedHandle( HANDLE handle ) :
+		m_handle( handle )
+	{
+	}
+
+	~ScopedHandle()
+	{
+		if( m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE )
+		{
+			CloseHandle( m_handle );
+		}
+	}
+
+	ScopedHandle( const ScopedHandle& ) = delete;
+	ScopedHandle& operator=( const ScopedHandle& ) = delete;
+
+	HANDLE get() const
+	{
+		return m_handle;
+	}
+
+	explicit operator bool() const
+	{
+		return m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE;
+	}
+
+private:
+	HANDLE m_handle;
+
+};
+
+
+bool isProtectedProcess( DWORD processId, const QString& executableName )
+{
+	return processId == 0 ||
+			processId == 4 ||
+			processId == GetCurrentProcessId() ||
+			isProtectedExecutableName( executableName );
+}
+#endif
+
+}
+
+
 ProcessBlocker::ProcessBlocker( QObject* parent ) :
 	QObject( parent )
 {
-	m_pollTimer.setInterval( 1000 );
+	m_pollTimer.setInterval( PollInterval );
 	connect( &m_pollTimer, &QTimer::timeout, this, &ProcessBlocker::pollProcesses );
 }
 
@@ -47,9 +140,10 @@ void ProcessBlocker::apply( const QStringList& apps )
 	QStringList normalizedApps;
 	for( const auto& app : apps )
 	{
-		const auto executableName = QFileInfo( app.trimmed() ).fileName();
+		const auto executableName = normalizedExecutableName( app );
 		if( executableName.isEmpty() == false &&
-			normalizedApps.contains( executableName, Qt::CaseInsensitive ) == false )
+			isProtectedExecutableName( executableName ) == false &&
+			normalizedApps.contains( executableName ) == false )
 		{
 			normalizedApps.append( executableName );
 		}
@@ -81,8 +175,8 @@ void ProcessBlocker::clear()
 void ProcessBlocker::pollProcesses()
 {
 #ifdef Q_OS_WIN
-	const auto snapshot = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
-	if( snapshot == INVALID_HANDLE_VALUE )
+	const ScopedHandle snapshot{CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 )};
+	if( !snapshot )
 	{
 		vCritical() << "ProcessBlocker: failed to enumerate processes:" << GetLastError();
 		return;
@@ -90,17 +184,18 @@ void ProcessBlocker::pollProcesses()
 
 	PROCESSENTRY32W processEntry{};
 	processEntry.dwSize = sizeof( processEntry );
-	if( Process32FirstW( snapshot, &processEntry ) )
+	if( Process32FirstW( snapshot.get(), &processEntry ) )
 	{
 		do
 		{
-			const auto executableName = QString::fromWCharArray( processEntry.szExeFile );
-			if( m_blockedApps.contains( executableName, Qt::CaseInsensitive ) )
+			const auto executableName = normalizedExecutableName( QString::fromWCharArray( processEntry.szExeFile ) );
+			if( m_blockedApps.contains( executableName ) &&
+				isProtectedProcess( processEntry.th32ProcessID, executableName ) == false )
 			{
-				const auto process = OpenProcess( PROCESS_TERMINATE, FALSE, processEntry.th32ProcessID );
-				if( process != nullptr )
+				const ScopedHandle process{OpenProcess( PROCESS_TERMINATE, FALSE, processEntry.th32ProcessID )};
+				if( process )
 				{
-					if( TerminateProcess( process, 1 ) )
+					if( TerminateProcess( process.get(), 0 ) )
 					{
 						vCritical() << "ProcessBlocker: terminated" << executableName
 									<< "PID" << processEntry.th32ProcessID;
@@ -110,7 +205,6 @@ void ProcessBlocker::pollProcesses()
 						vCritical() << "ProcessBlocker: failed to terminate" << executableName
 									<< "PID" << processEntry.th32ProcessID << "error" << GetLastError();
 					}
-					CloseHandle( process );
 				}
 				else
 				{
@@ -119,10 +213,8 @@ void ProcessBlocker::pollProcesses()
 				}
 			}
 		}
-		while( Process32NextW( snapshot, &processEntry ) );
+		while( Process32NextW( snapshot.get(), &processEntry ) );
 	}
-
-	CloseHandle( snapshot );
 #endif
 
 }

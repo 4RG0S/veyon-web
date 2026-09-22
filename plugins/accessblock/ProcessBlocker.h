@@ -49,6 +49,6 @@ private:
 	void pollProcesses();
 
 	QStringList m_blockedApps;
-	QTimer m_pollTimer;
+	QTimer m_pollTimer{this};
 
 };

@@ -51,6 +51,36 @@ const GUID AccessBlockSublayer =
 { 0x9bf09f59, 0x6fe5, 0x4fef, { 0x9e, 0xb6, 0x37, 0xd5, 0x42, 0x64, 0xa1, 0xd2 } };
 
 
+class ScopedRegistryKey
+{
+public:
+	explicit ScopedRegistryKey( HKEY key ) :
+		m_key( key )
+	{
+	}
+
+	~ScopedRegistryKey()
+	{
+		if( m_key != nullptr )
+		{
+			RegCloseKey( m_key );
+		}
+	}
+
+	ScopedRegistryKey( const ScopedRegistryKey& ) = delete;
+	ScopedRegistryKey& operator=( const ScopedRegistryKey& ) = delete;
+
+	HKEY get() const
+	{
+		return m_key;
+	}
+
+private:
+	HKEY m_key;
+
+};
+
+
 bool removePolicyKey( const wchar_t* policyKey )
 {
 	const auto result = RegDeleteTreeW( HKEY_LOCAL_MACHINE, policyKey );
@@ -77,21 +107,27 @@ bool writePolicyKey( const wchar_t* policyKey, const QStringList& urls )
 	}
 
 	bool success = true;
-	for( qsizetype index = 0; index < urls.size(); ++index )
 	{
-		const auto valueName = QString::number( index + 1 ).toStdWString();
-		const auto value = urls.at( index ).toStdWString();
-		const auto valueSize = static_cast<DWORD>( ( value.size() + 1 ) * sizeof( wchar_t ) );
-
-		if( RegSetValueExW( key, valueName.c_str(), 0, REG_SZ,
-				reinterpret_cast<const BYTE*>( value.c_str() ), valueSize ) != ERROR_SUCCESS )
+		const ScopedRegistryKey scopedKey{key};
+		for( qsizetype index = 0; index < urls.size(); ++index )
 		{
-			success = false;
-			break;
+			const auto valueName = QString::number( index + 1 ).toStdWString();
+			const auto value = urls.at( index ).toStdWString();
+			const auto valueSize = static_cast<DWORD>( ( value.size() + 1 ) * sizeof( wchar_t ) );
+
+			if( RegSetValueExW( scopedKey.get(),
+								valueName.c_str(),
+								0,
+								REG_SZ,
+								reinterpret_cast<const BYTE*>( value.c_str() ),
+								valueSize ) != ERROR_SUCCESS )
+			{
+				success = false;
+				break;
+			}
 		}
 	}
 
-	RegCloseKey( key );
 	if( success == false )
 	{
 		removePolicyKey( policyKey );
