@@ -24,6 +24,7 @@ if(WITH_TESTS)
 		AccessBlockProtocolTest.cpp
 		AccessBlockProtocol.cpp
 		AccessBlockProtocol.h)
+	set_default_target_properties(AccessBlockProtocolTest)
 	target_link_libraries(AccessBlockProtocolTest PRIVATE
 		veyon-core
 		Qt${QT_MAJOR_VERSION}::Test)

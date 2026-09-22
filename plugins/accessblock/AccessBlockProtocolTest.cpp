@@ -17,7 +17,7 @@ class AccessBlockProtocolTest : public QObject
 {
 	Q_OBJECT
 
-private slots:
+private Q_SLOTS:
 	void fixedWireIdentifiers();
 	void roundTripAndCorrelate();
 	void rejectOversizedEnvelope();
