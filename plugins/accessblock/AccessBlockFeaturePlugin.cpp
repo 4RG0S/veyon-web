@@ -77,7 +77,8 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 		AccessBlockProtocol::decode( query, &queryEnvelope, nullptr );
 		for( const auto& computerControlInterface : computerControlInterfaces )
 		{
-			computerControlInterface->setProperty( "accessBlockV2PendingCommandId", queryEnvelope.commandId );
+			computerControlInterface.data()->QObject::setProperty(
+					"accessBlockV2PendingCommandId", queryEnvelope.commandId );
 		}
 		sendFeatureMessage( query, computerControlInterfaces );
 
@@ -96,7 +97,8 @@ bool AccessBlockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operatio
 		AccessBlockProtocol::decode( query, &queryEnvelope, nullptr );
 		for( const auto& computerControlInterface : computerControlInterfaces )
 		{
-			computerControlInterface->setProperty( "accessBlockV2PendingCommandId", queryEnvelope.commandId );
+			computerControlInterface.data()->QObject::setProperty(
+					"accessBlockV2PendingCommandId", queryEnvelope.commandId );
 		}
 		sendFeatureMessage( query, computerControlInterfaces );
 
@@ -225,7 +227,7 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage(
 	QString decodeError;
 	if( AccessBlockProtocol::decode( message, &envelope, &decodeError ) == false )
 	{
-		computerControlInterface->setProperty( "accessBlockV2LastError", decodeError );
+		computerControlInterface.data()->QObject::setProperty( "accessBlockV2LastError", decodeError );
 		return true;
 	}
 	const auto command = message.command<AccessBlockProtocol::Command>();
@@ -235,7 +237,7 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage(
 		command != AccessBlockProtocol::Command::Rejected &&
 		command != AccessBlockProtocol::Command::CapabilitiesResult )
 	{
-		computerControlInterface->setProperty(
+		computerControlInterface.data()->QObject::setProperty(
 				"accessBlockV2LastError", QStringLiteral("unexpected request command from server") );
 		return true;
 	}
@@ -243,18 +245,18 @@ bool AccessBlockFeaturePlugin::handleFeatureMessage(
 			"accessBlockV2PendingCommandId" ).toUuid();
 	if( pendingCommandId.isNull() || pendingCommandId != envelope.commandId )
 	{
-		computerControlInterface->setProperty(
+		computerControlInterface.data()->QObject::setProperty(
 				"accessBlockV2LastError", QStringLiteral("uncorrelated or stale response") );
 		return true;
 	}
 
-	computerControlInterface->setProperty( "accessBlockV2LastCommand",
+	computerControlInterface.data()->QObject::setProperty( "accessBlockV2LastCommand",
 									 static_cast<int>( command ) );
-	computerControlInterface->setProperty( "accessBlockV2LastCommandId", envelope.commandId );
-	computerControlInterface->setProperty( "accessBlockV2LastPayload",
+	computerControlInterface.data()->QObject::setProperty( "accessBlockV2LastCommandId", envelope.commandId );
+	computerControlInterface.data()->QObject::setProperty( "accessBlockV2LastPayload",
 									 QVariant::fromValue( envelope.payload.toVariantMap() ) );
-	computerControlInterface->setProperty( "accessBlockV2LastError", QVariant{} );
-	computerControlInterface->setProperty( "accessBlockV2PendingCommandId", QVariant{} );
+	computerControlInterface.data()->QObject::setProperty( "accessBlockV2LastError", QVariant{} );
+	computerControlInterface.data()->QObject::setProperty( "accessBlockV2PendingCommandId", QVariant{} );
 	return true;
 }
 
