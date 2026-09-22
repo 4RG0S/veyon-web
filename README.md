@@ -3,6 +3,9 @@
 CHECK NODE는 **client watch program**으로, master PC가 slave PC들에 대하여 특정 URL과
 프로그램에 접근하는 것을 차단시키는 프로그램이다.
 
+> 팀 개발 시작점: [AccessBlock 팀 공유 가이드](docs/specs/README.md). 신규 구현자는
+> `docs/team/P1~P3`보다 이 가이드와 `docs/specs/*_SPEC.md`를 우선한다.
+
 
 ## 개요
 
@@ -26,6 +29,9 @@ master와 slave는 네트워크로 연결되며, master가 각 slave의 에이�
 
 ## 기능 명세
 
+아래 표는 제품 목표다. 현재 구현의 실제 보장과 차기 구조는 "구현 상태" 및
+[`docs/specs/`](docs/specs/)를 기준으로 판단한다.
+
 ### 1. 웹사이트 접근 제어
 
 | 항목 | 내용 |
@@ -48,11 +54,14 @@ master와 slave는 네트워크로 연결되며, master가 각 slave의 에이�
 
 ### 조작 방식
 
-차단 기능은 master 툴바의 모드형 버튼(**Block access** / **Unblock access**)으로
-제공되며, 커맨드라인에서도 실행할 수 있다:
+현재 legacy 구현은 master 툴바의 모드형 버튼(**Block access** / **Unblock access**)과
+다음 커맨드라인을 사용한다:
 
     veyon-cli feature start <host> AccessBlock
     veyon-cli feature stop  <host> AccessBlock
+
+이 Mode 기반 조작은 다른 Veyon mode와 배타적으로 동작하므로 장기 정책의 목표 계약이
+아니다. 차기 v2는 독립적인 `Apply/Clear/Status` 명령과 장치별 적용 결과를 사용한다.
 
 
 ## Veyon 기반 기능
@@ -78,18 +87,25 @@ CHECK NODE는 Veyon을 기반으로 하므로 다음 기능들도 함께 제공�
 ## 아키텍처
 
 - 차단 기능은 `plugins/accessblock/` 의 **AccessBlock** 기능 플러그인으로 구현된다.
-- 메시지 흐름은 **master → server → worker** 3단 구조를 따른다.
-  master가 차단 대상(URL/프로그램 목록)을 담아 slave 서버로 전송하면,
-  서버가 이를 해석해 차단을 적용한다.
+- 현재 구현은 **master → per-session server**로 목록을 보내고 server 플러그인이 WFP,
+  브라우저 정책 및 프로세스 감시를 직접 적용한다. AccessBlock worker handler는 사용하지
+  않는다.
+- Windows는 WTS 세션별 server를 만들기 때문에 머신 전역 writer가 중복될 수 있다.
+  차기 규범 구조는 **master → server 인증 gateway → machine-singleton service broker →
+  Network/Process enforcer**다.
+- GAN 검토, 전체 구조, 프로세스·웹 상세 명세는
+  [`docs/specs/`](docs/specs/)에서 확인한다.
 
 
 ## 구현 상태
 
 | 항목 | 상태 |
 | --- | --- |
-| master → server 메시지 배관 | 구현 및 종단간 검증 완료 (Start/Stop이 대상 목록을 담아 서버 핸들러까지 도달) |
-| 웹사이트 접근 제어 로직 | 미구현 (서버 핸들러가 수신 상태를 로그로만 출력) |
-| 프로그램 실행 제어 로직 | 미구현 |
+| master → server 메시지 배관 | 정적 경로 확인: Start/Stop 대상 목록이 서버 handler에 도달한다. 실제 OS 적용이나 Windows 종단간 성공 검증은 아님 |
+| 웹사이트 접근 제어 로직 | Chrome/Edge policy와 DNS 결과 IP 기반 WFP의 best-effort 구현 존재. 외부 policy 소유권, 원자 갱신, ACK/복구 보강 전 운영 배포 불가 |
+| 프로그램 실행 제어 로직 | basename 1초 polling 후 강제 종료하는 containment 구현 존재. 실행 예방이 아니며 identity/오탐/ACK 보강 필요 |
+| 정책 상태·복구 | revision, 장치별 적용 ACK, journal, stale 명령 거부, boot reconcile 미구현 |
+| Windows 검증 | 이전 정적 검토 외 Windows/MSYS2 compile과 실제 runtime 시험 미완료 |
 | slave 화면 보기(원격 화면 조회) | 현재 미포함 — Windows용 화면 캡처 VNC 서버가 제거된 상태 |
 
 
