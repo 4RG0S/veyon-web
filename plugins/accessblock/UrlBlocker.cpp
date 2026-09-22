@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 #ifdef Q_OS_WIN
@@ -47,15 +48,26 @@
 namespace
 {
 
+constexpr auto ResolutionTimeout = 5000;
+
 #ifdef Q_OS_WIN
 constexpr wchar_t ChromePolicyKey[] = L"SOFTWARE\\Policies\\Google\\Chrome\\URLBlocklist";
 constexpr wchar_t EdgePolicyKey[] = L"SOFTWARE\\Policies\\Microsoft\\Edge\\URLBlocklist";
 constexpr wchar_t ChromeOwnershipKey[] = L"SOFTWARE\\Veyon\\AccessBlock\\BrowserOwnership\\Chrome";
 constexpr wchar_t EdgeOwnershipKey[] = L"SOFTWARE\\Veyon\\AccessBlock\\BrowserOwnership\\Edge";
 constexpr qsizetype MaximumBrowserPolicyEntries = 1000;
+constexpr UINT32 DynamicWfpSessionFlag = 0x00000001;
 
 const GUID AccessBlockSublayer =
 { 0x9bf09f59, 0x6fe5, 0x4fef, { 0x9e, 0xb6, 0x37, 0xd5, 0x42, 0x64, 0xa1, 0xd2 } };
+
+
+GUID accessBlockSublayerKey()
+{
+	auto key = AccessBlockSublayer;
+	key.Data1 ^= GetCurrentProcessId();
+	return key;
+}
 
 
 class ScopedRegistryKey
@@ -88,7 +100,62 @@ private:
 };
 
 
+class ScopedNamedMutex
+{
+public:
+	explicit ScopedNamedMutex( const wchar_t* name ) :
+		m_mutex( CreateMutexW( nullptr, FALSE, name ) )
+	{
+		const auto waitResult = m_mutex ? WaitForSingleObject( m_mutex, 5000 ) : WAIT_FAILED;
+		if( waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED )
+		{
+			m_locked = true;
+		}
+	}
+
+	~ScopedNamedMutex()
+	{
+		if( m_locked )
+		{
+			ReleaseMutex( m_mutex );
+		}
+		if( m_mutex )
+		{
+			CloseHandle( m_mutex );
+		}
+	}
+
+	ScopedNamedMutex( const ScopedNamedMutex& ) = delete;
+	ScopedNamedMutex& operator=( const ScopedNamedMutex& ) = delete;
+
+	explicit operator bool() const
+	{
+		return m_locked;
+	}
+
+private:
+	HANDLE m_mutex{};
+	bool m_locked{};
+};
+
+
 using RegistryValues = QMap<QString, QString>;
+
+
+struct OwnedPolicyState
+{
+	QStringList foreignUrls;
+	QStringList ownedUrls;
+	RegistryValues ownedValues;
+};
+
+
+enum class ConditionalWriteResult
+{
+	Written,
+	PreconditionMismatch,
+	WriteFailure,
+};
 
 
 QByteArray policyValueHash( const QString& value )
@@ -174,6 +241,35 @@ bool readRegistryValues( const wchar_t* path,
 }
 
 
+bool setRegistryStringValue( HKEY key, const QString& name, const QString& value )
+{
+	const auto nameData = name.toStdWString();
+	const auto valueData = value.toStdWString();
+	const auto valueSize = static_cast<DWORD>( ( valueData.size() + 1 ) * sizeof( wchar_t ) );
+	if( RegSetValueExW( key, nameData.c_str(), 0, REG_SZ,
+						 reinterpret_cast<const BYTE*>( valueData.c_str() ), valueSize ) != ERROR_SUCCESS )
+	{
+		return false;
+	}
+
+	DWORD readType = 0;
+	DWORD readSize = 0;
+	if( RegQueryValueExW( key, nameData.c_str(), nullptr, &readType, nullptr, &readSize ) != ERROR_SUCCESS ||
+		readType != REG_SZ )
+	{
+		return false;
+	}
+	std::vector<wchar_t> readValue( readSize / sizeof( wchar_t ) + 1 );
+	if( RegQueryValueExW( key, nameData.c_str(), nullptr, &readType,
+						 reinterpret_cast<BYTE*>( readValue.data() ), &readSize ) != ERROR_SUCCESS )
+	{
+		return false;
+	}
+	return QString::fromWCharArray( readValue.data() ) == value &&
+			RegFlushKey( key ) == ERROR_SUCCESS;
+}
+
+
 bool setRegistryString( const wchar_t* path, const QString& name, const QString& value )
 {
 	HKEY key = nullptr;
@@ -182,29 +278,50 @@ bool setRegistryString( const wchar_t* path, const QString& name, const QString&
 		return false;
 	}
 	const ScopedRegistryKey scopedKey{key};
-	const auto nameData = name.toStdWString();
-	const auto valueData = value.toStdWString();
-	const auto valueSize = static_cast<DWORD>( ( valueData.size() + 1 ) * sizeof( wchar_t ) );
-	if( RegSetValueExW( scopedKey.get(), nameData.c_str(), 0, REG_SZ,
-						 reinterpret_cast<const BYTE*>( valueData.c_str() ), valueSize ) != ERROR_SUCCESS )
+	return setRegistryStringValue( scopedKey.get(), name, value );
+}
+
+
+ConditionalWriteResult setRegistryStringIfMatches( const wchar_t* path,
+													const QString& name,
+													const QString* expectedValue,
+													const QString& value )
+{
+	HKEY key = nullptr;
+	if( openOrCreateRegistryKey( path, KEY_QUERY_VALUE | KEY_SET_VALUE, &key ) == false )
 	{
-		return false;
+		return ConditionalWriteResult::WriteFailure;
+	}
+	const ScopedRegistryKey scopedKey{key};
+	const auto nameData = name.toStdWString();
+	DWORD valueType = 0;
+	DWORD valueSize = 0;
+	const auto sizeResult = RegQueryValueExW(
+			scopedKey.get(), nameData.c_str(), nullptr, &valueType, nullptr, &valueSize );
+	if( expectedValue == nullptr )
+	{
+		if( sizeResult != ERROR_FILE_NOT_FOUND )
+		{
+			return ConditionalWriteResult::PreconditionMismatch;
+		}
+	}
+	else
+	{
+		if( sizeResult != ERROR_SUCCESS || valueType != REG_SZ || valueSize < sizeof( wchar_t ) )
+		{
+			return ConditionalWriteResult::PreconditionMismatch;
+		}
+		std::vector<wchar_t> currentValue( valueSize / sizeof( wchar_t ) + 1 );
+		if( RegQueryValueExW( scopedKey.get(), nameData.c_str(), nullptr, &valueType,
+							 reinterpret_cast<BYTE*>( currentValue.data() ), &valueSize ) != ERROR_SUCCESS ||
+			QString::fromWCharArray( currentValue.data() ) != *expectedValue )
+		{
+			return ConditionalWriteResult::PreconditionMismatch;
+		}
 	}
 
-	DWORD readType = 0;
-	DWORD readSize = 0;
-	if( RegQueryValueExW( scopedKey.get(), nameData.c_str(), nullptr, &readType, nullptr, &readSize ) != ERROR_SUCCESS ||
-		readType != REG_SZ )
-	{
-		return false;
-	}
-	std::vector<wchar_t> readValue( readSize / sizeof( wchar_t ) + 1 );
-	if( RegQueryValueExW( scopedKey.get(), nameData.c_str(), nullptr, &readType,
-						 reinterpret_cast<BYTE*>( readValue.data() ), &readSize ) != ERROR_SUCCESS )
-	{
-		return false;
-	}
-	return QString::fromWCharArray( readValue.data() ) == value;
+	return setRegistryStringValue( scopedKey.get(), name, value )
+			? ConditionalWriteResult::Written : ConditionalWriteResult::WriteFailure;
 }
 
 
@@ -224,7 +341,8 @@ bool deleteRegistryValue( const wchar_t* path, const QString& name )
 	const ScopedRegistryKey scopedKey{key};
 	const auto nameData = name.toStdWString();
 	const auto result = RegDeleteValueW( scopedKey.get(), nameData.c_str() );
-	return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+	return result == ERROR_FILE_NOT_FOUND ||
+			( result == ERROR_SUCCESS && RegFlushKey( scopedKey.get() ) == ERROR_SUCCESS );
 }
 
 
@@ -232,64 +350,224 @@ bool deleteRegistryValueIfMatches( const wchar_t* path,
 								   const QString& name,
 								   const QString& expectedValue )
 {
-	RegistryValues values;
-	QSet<QString> valueNames;
-	if( readRegistryValues( path, &values, &valueNames ) == false )
-	{
-		return false;
-	}
-	if( valueNames.contains( name ) == false )
+	HKEY key = nullptr;
+	const auto openResult = RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0,
+										KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &key );
+	if( openResult == ERROR_FILE_NOT_FOUND )
 	{
 		return true;
 	}
-	if( values.contains( name ) == false )
+	if( openResult != ERROR_SUCCESS )
 	{
 		return false;
 	}
-	if( values.value( name ) != expectedValue )
+	const ScopedRegistryKey scopedKey{key};
+	const auto nameData = name.toStdWString();
+	DWORD valueType = 0;
+	DWORD valueSize = 0;
+	const auto sizeResult = RegQueryValueExW(
+			scopedKey.get(), nameData.c_str(), nullptr, &valueType, nullptr, &valueSize );
+	if( sizeResult == ERROR_FILE_NOT_FOUND )
+	{
+		return true;
+	}
+	if( sizeResult != ERROR_SUCCESS || valueType != REG_SZ || valueSize < sizeof( wchar_t ) )
 	{
 		return false;
 	}
-	return deleteRegistryValue( path, name );
+	std::vector<wchar_t> value( valueSize / sizeof( wchar_t ) + 1 );
+	if( RegQueryValueExW( scopedKey.get(), nameData.c_str(), nullptr, &valueType,
+						 reinterpret_cast<BYTE*>( value.data() ), &valueSize ) != ERROR_SUCCESS ||
+		QString::fromWCharArray( value.data() ) != expectedValue )
+	{
+		return false;
+	}
+	return RegDeleteValueW( scopedKey.get(), nameData.c_str() ) == ERROR_SUCCESS &&
+			RegFlushKey( scopedKey.get() ) == ERROR_SUCCESS;
 }
 
 
-bool clearOwnedPolicyValues( const wchar_t* policyKey, const wchar_t* ownershipKey )
+QString pendingOwnershipRecord( const QString& oldHash, const QString& newHash )
 {
-	RegistryValues currentValues;
-	RegistryValues ownershipValues;
-	if( readRegistryValues( policyKey, &currentValues ) == false ||
-		readRegistryValues( ownershipKey, &ownershipValues ) == false )
-	{
-		return false;
-	}
+	return QStringLiteral("P:%1:%2").arg( oldHash, newHash );
+}
 
-	bool success = true;
+
+bool recoverPendingOwnership( const wchar_t* policyKey,
+								  const wchar_t* ownershipKey,
+								  const RegistryValues& currentValues,
+								  const QSet<QString>& currentValueNames,
+								  const RegistryValues& ownershipValues )
+{
 	for( auto it = ownershipValues.cbegin(); it != ownershipValues.cend(); ++it )
 	{
-		const auto currentValue = currentValues.value( it.key() );
-		if( currentValues.contains( it.key() ) && policyValueHash( currentValue ) == it.value().toLatin1() )
+		if( it.value().startsWith( QStringLiteral("P:") ) == false )
 		{
-			if( deleteRegistryValueIfMatches( policyKey, it.key(), currentValue ) )
+			if( currentValueNames.contains( it.key() ) == false )
 			{
-				success = deleteRegistryValue( ownershipKey, it.key() ) && success;
+				if( deleteRegistryValue( ownershipKey, it.key() ) == false )
+				{
+					return false;
+				}
 			}
-			else
+			else if( currentValues.contains( it.key() ) == false ||
+					 policyValueHash( currentValues.value( it.key() ) ) != it.value().toLatin1() )
 			{
-				success = false;
+				return false;
+			}
+			continue;
+		}
+
+		const auto parts = it.value().split( QLatin1Char(':') );
+		if( parts.size() != 3 )
+		{
+			return false;
+		}
+		const auto& oldHash = parts.at( 1 );
+		const auto& newHash = parts.at( 2 );
+		if( currentValueNames.contains( it.key() ) == false )
+		{
+			if( oldHash == QLatin1String("-") || newHash == QLatin1String("-") )
+			{
+				if( deleteRegistryValue( ownershipKey, it.key() ) == false )
+				{
+					return false;
+				}
+				continue;
+			}
+			return false;
+		}
+		if( oldHash == QLatin1String("-") )
+		{
+			// A crashed add cannot be distinguished from an external writer that
+			// populated the same slot. Relinquish ownership and preserve the value.
+			if( deleteRegistryValue( ownershipKey, it.key() ) == false )
+			{
+				return false;
+			}
+			continue;
+		}
+		if( currentValues.contains( it.key() ) == false )
+		{
+			return false;
+		}
+
+		const auto currentHash = QString::fromLatin1( policyValueHash( currentValues.value( it.key() ) ) );
+		if( newHash != QLatin1String("-") && currentHash == newHash )
+		{
+			if( setRegistryString( ownershipKey, it.key(), newHash ) == false )
+			{
+				return false;
 			}
 		}
-		else if( currentValues.contains( it.key() ) )
+		else if( newHash == QLatin1String("-") && currentHash == oldHash )
 		{
-			vWarning() << "UrlBlocker: preserving externally changed browser policy value" << it.key();
-			success = false;
+			if( deleteRegistryValueIfMatches( policyKey, it.key(), currentValues.value( it.key() ) ) == false ||
+				deleteRegistryValue( ownershipKey, it.key() ) == false )
+			{
+				return false;
+			}
+		}
+		else if( oldHash != QLatin1String("-") && currentHash == oldHash )
+		{
+			if( setRegistryString( ownershipKey, it.key(), oldHash ) == false )
+			{
+				return false;
+			}
 		}
 		else
 		{
-			success = deleteRegistryValue( ownershipKey, it.key() ) && success;
+			return false;
 		}
 	}
-	return success;
+	return true;
+}
+
+
+bool readOwnedPolicyState( const wchar_t* policyKey,
+							  const wchar_t* ownershipKey,
+							  OwnedPolicyState* state )
+{
+	RegistryValues currentValues;
+	RegistryValues ownershipValues;
+	QSet<QString> currentValueNames;
+	QSet<QString> ownershipValueNames;
+	if( readRegistryValues( policyKey, &currentValues, &currentValueNames ) == false ||
+		readRegistryValues( ownershipKey, &ownershipValues, &ownershipValueNames ) == false ||
+		ownershipValueNames.size() != ownershipValues.size() )
+	{
+		return false;
+	}
+	if( recoverPendingOwnership( policyKey, ownershipKey, currentValues,
+								 currentValueNames, ownershipValues ) == false ||
+		readRegistryValues( policyKey, &currentValues, &currentValueNames ) == false ||
+		readRegistryValues( ownershipKey, &ownershipValues, &ownershipValueNames ) == false )
+	{
+		vWarning() << "UrlBlocker: browser policy ownership recovery is required";
+		return false;
+	}
+	if( currentValueNames.size() != currentValues.size() ||
+		ownershipValueNames.size() != ownershipValues.size() )
+	{
+		vWarning() << "UrlBlocker: non-string browser policy values were preserved";
+		return false;
+	}
+
+	QMap<quint64, QString> indexedValues;
+	for( auto it = currentValues.cbegin(); it != currentValues.cend(); ++it )
+	{
+		bool validIndex = false;
+		const auto index = it.key().toULongLong( &validIndex );
+		if( validIndex == false || index == 0 || QString::number( index ) != it.key() ||
+			indexedValues.contains( index ) )
+		{
+			vWarning() << "UrlBlocker: non-canonical browser list value names were preserved";
+			return false;
+		}
+		indexedValues.insert( index, it.value() );
+	}
+
+	for( auto it = ownershipValues.cbegin(); it != ownershipValues.cend(); ++it )
+	{
+		if( currentValues.contains( it.key() ) == false ||
+			policyValueHash( currentValues.value( it.key() ) ) != it.value().toLatin1() )
+		{
+			vWarning() << "UrlBlocker: browser ownership manifest does not match policy values";
+			return false;
+		}
+	}
+
+	state->foreignUrls.clear();
+	state->ownedUrls.clear();
+	state->ownedValues.clear();
+	quint64 nextForeignIndex = 1;
+	while( indexedValues.contains( nextForeignIndex ) &&
+		   ownershipValues.contains( QString::number( nextForeignIndex ) ) == false )
+	{
+		state->foreignUrls.append( indexedValues.value( nextForeignIndex ) );
+		++nextForeignIndex;
+	}
+
+	QMap<quint64, QString> indexedOwnedValues;
+	for( auto it = indexedValues.cbegin(); it != indexedValues.cend(); ++it )
+	{
+		const auto name = QString::number( it.key() );
+		if( ownershipValues.contains( name ) )
+		{
+			state->ownedValues.insert( name, it.value() );
+			indexedOwnedValues.insert( it.key(), it.value() );
+		}
+		else if( it.key() >= nextForeignIndex )
+		{
+			vWarning() << "UrlBlocker: unmanaged browser values outside the contiguous prefix were preserved";
+			return false;
+		}
+	}
+	for( const auto& value : std::as_const( indexedOwnedValues ) )
+	{
+		state->ownedUrls.append( value );
+	}
+	return true;
 }
 
 
@@ -297,121 +575,98 @@ bool writeOwnedPolicyValues( const wchar_t* policyKey,
 								 const wchar_t* ownershipKey,
 								 const QStringList& urls )
 {
-	RegistryValues currentValues;
-	RegistryValues ownershipValues;
-	QSet<QString> currentValueNames;
-	if( readRegistryValues( policyKey, &currentValues, &currentValueNames ) == false ||
-		readRegistryValues( ownershipKey, &ownershipValues ) == false )
+	OwnedPolicyState currentState;
+	if( readOwnedPolicyState( policyKey, ownershipKey, &currentState ) == false )
 	{
 		return false;
 	}
-	qsizetype additions = 0;
-	for( const auto& url : urls )
-	{
-		if( currentValues.values().contains( url ) == false )
-		{
-			++additions;
-		}
-	}
-	if( currentValueNames.size() + additions > MaximumBrowserPolicyEntries )
+	if( currentState.foreignUrls.size() + urls.size() > MaximumBrowserPolicyEntries )
 	{
 		vWarning() << "UrlBlocker: browser policy capacity would be exceeded";
 		return false;
 	}
 
-	for( auto it = ownershipValues.begin(); it != ownershipValues.end(); )
+	QSet<QString> desiredOwnedNames;
+	for( qsizetype index = 0; index < urls.size(); ++index )
 	{
-		if( currentValueNames.contains( it.key() ) == false )
-		{
-			deleteRegistryValue( ownershipKey, it.key() );
-			it = ownershipValues.erase( it );
-		}
-		else if( currentValues.contains( it.key() ) == false ||
-				 policyValueHash( currentValues.value( it.key() ) ) != it.value().toLatin1() )
-		{
-			vWarning() << "UrlBlocker: browser ownership conflict for value" << it.key();
-			return false;
-		}
-		else
-		{
-			++it;
-		}
-	}
-
-	QMap<QString, QString> desiredOwnedValues;
-	QVector<QPair<QString, QString>> newlyAddedValues;
-	quint64 candidateName = 1000000;
-	for( const auto& url : urls )
-	{
-		QString existingOwnedName;
-		for( auto it = ownershipValues.cbegin(); it != ownershipValues.cend(); ++it )
-		{
-			if( currentValues.value( it.key() ) == url )
-			{
-				existingOwnedName = it.key();
-				break;
-			}
-		}
-		if( existingOwnedName.isEmpty() == false )
-		{
-			desiredOwnedValues.insert( existingOwnedName, url );
-			continue;
-		}
-		if( currentValues.values().contains( url ) )
+		const auto name = QString::number( currentState.foreignUrls.size() + index + 1 );
+		desiredOwnedNames.insert( name );
+		const auto& newValue = urls.at( index );
+		if( currentState.ownedValues.value( name ) == newValue )
 		{
 			continue;
 		}
-
-		QString valueName;
-		do
+		const auto replacesOwnedValue = currentState.ownedValues.contains( name );
+		const auto oldHash = replacesOwnedValue
+				? QString::fromLatin1( policyValueHash( currentState.ownedValues.value( name ) ) )
+				: QStringLiteral("-");
+		const auto newHash = QString::fromLatin1( policyValueHash( newValue ) );
+		const auto oldValue = currentState.ownedValues.value( name );
+		const auto expectedValue = replacesOwnedValue ? &oldValue : nullptr;
+		if( replacesOwnedValue &&
+			setRegistryString( ownershipKey, name, pendingOwnershipRecord( oldHash, newHash ) ) == false )
 		{
-			valueName = QString::number( candidateName++ );
+			return false;
 		}
-		while( currentValueNames.contains( valueName ) );
 
-		const auto hash = QString::fromLatin1( policyValueHash( url ) );
-		if( setRegistryString( ownershipKey, valueName, hash ) == false ||
-			setRegistryString( policyKey, valueName, url ) == false )
+		const auto writeResult = setRegistryStringIfMatches(
+				policyKey, name, expectedValue, newValue );
+		if( writeResult != ConditionalWriteResult::Written )
 		{
-			for( const auto& added : std::as_const( newlyAddedValues ) )
+			if( replacesOwnedValue && writeResult == ConditionalWriteResult::PreconditionMismatch )
 			{
-				if( deleteRegistryValueIfMatches( policyKey, added.first, added.second ) )
+				if( deleteRegistryValue( ownershipKey, name ) == false )
 				{
-					deleteRegistryValue( ownershipKey, added.first );
+					vCritical() << "UrlBlocker: failed to relinquish a contested browser policy value";
 				}
-			}
-			if( deleteRegistryValueIfMatches( policyKey, valueName, url ) )
-			{
-				deleteRegistryValue( ownershipKey, valueName );
 			}
 			return false;
 		}
-		newlyAddedValues.append( { valueName, url } );
-		currentValues.insert( valueName, url );
-		currentValueNames.insert( valueName );
-		desiredOwnedValues.insert( valueName, url );
-	}
-
-	bool success = true;
-	for( auto it = ownershipValues.cbegin(); it != ownershipValues.cend(); ++it )
-	{
-		if( desiredOwnedValues.contains( it.key() ) == false )
+		if( setRegistryString( ownershipKey, name, newHash ) == false )
 		{
-			if( policyValueHash( currentValues.value( it.key() ) ) == it.value().toLatin1() )
+			if( replacesOwnedValue == false )
 			{
-				if( deleteRegistryValueIfMatches( policyKey, it.key(), currentValues.value( it.key() ) ) )
+				const bool ownershipCleared = deleteRegistryValue( ownershipKey, name );
+				const bool policyRolledBack = ownershipCleared &&
+						deleteRegistryValueIfMatches( policyKey, name, newValue );
+				if( ownershipCleared == false || policyRolledBack == false )
 				{
-					success = deleteRegistryValue( ownershipKey, it.key() ) && success;
-				}
-				else
-				{
-					success = false;
+					vCritical() << "UrlBlocker: new browser policy ownership failed and rollback requires recovery";
 				}
 			}
+			return false;
 		}
 	}
 
-	return success;
+	QMap<quint64, QString> obsoleteOwnedNames;
+	for( auto it = currentState.ownedValues.cbegin(); it != currentState.ownedValues.cend(); ++it )
+	{
+		if( desiredOwnedNames.contains( it.key() ) == false )
+		{
+			obsoleteOwnedNames.insert( it.key().toULongLong(), it.key() );
+		}
+	}
+	for( auto it = obsoleteOwnedNames.crbegin(); it != obsoleteOwnedNames.crend(); ++it )
+	{
+		const auto& name = it.value();
+		const auto oldValue = currentState.ownedValues.value( name );
+		const auto oldHash = QString::fromLatin1( policyValueHash( oldValue ) );
+		if( setRegistryString( ownershipKey, name,
+							   pendingOwnershipRecord( oldHash, QStringLiteral("-") ) ) == false ||
+			deleteRegistryValueIfMatches( policyKey, name, oldValue ) == false ||
+			deleteRegistryValue( ownershipKey, name ) == false )
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+
+bool clearOwnedPolicyValues( const wchar_t* policyKey, const wchar_t* ownershipKey )
+{
+	return writeOwnedPolicyValues( policyKey, ownershipKey, {} );
 }
 #endif
 
@@ -430,12 +685,22 @@ UrlBlocker::UrlBlocker( QObject* parent ) :
 {
 	m_refreshTimer.setInterval( 60000 );
 	connect( &m_refreshTimer, &QTimer::timeout, this, &UrlBlocker::applyNetworkFilters );
+	m_resolutionTimer.setSingleShot( true );
+	m_resolutionTimer.setInterval( ResolutionTimeout );
+	connect( &m_resolutionTimer, &QTimer::timeout, this, [this]() {
+		if( m_pendingDomains.isEmpty() == false )
+		{
+			cancelNetworkResolution();
+			vCritical() << "UrlBlocker: DNS resolution timed out; previous WFP generation remains active";
+		}
+	} );
 }
 
 
 UrlBlocker::~UrlBlocker()
 {
 	m_refreshTimer.stop();
+	cancelNetworkResolution();
 	clearNetworkFilters();
 	closeNetworkEngine();
 }
@@ -490,16 +755,36 @@ void UrlBlocker::applyBrowserPolicies( const QStringList& urls )
 		clearBrowserPolicies();
 		return;
 	}
+	const ScopedNamedMutex policyMutex{L"Global\\VeyonAccessBlockBrowserPolicy"};
+	if( !policyMutex )
+	{
+		vCritical() << "UrlBlocker: could not acquire browser policy writer mutex";
+		return;
+	}
+	OwnedPolicyState previousChromeState;
+	OwnedPolicyState previousEdgeState;
+	if( readOwnedPolicyState( ChromePolicyKey, ChromeOwnershipKey, &previousChromeState ) == false ||
+		readOwnedPolicyState( EdgePolicyKey, EdgeOwnershipKey, &previousEdgeState ) == false )
+	{
+		vCritical() << "UrlBlocker: browser policy preflight failed; unmanaged values were preserved";
+		return;
+	}
 
 	const bool chromeSuccess = writeOwnedPolicyValues( ChromePolicyKey, ChromeOwnershipKey, urls );
-	const bool edgeSuccess = writeOwnedPolicyValues( EdgePolicyKey, EdgeOwnershipKey, urls );
+	const bool edgeSuccess = chromeSuccess &&
+			writeOwnedPolicyValues( EdgePolicyKey, EdgeOwnershipKey, urls );
 	if( chromeSuccess && edgeSuccess )
 	{
 		vCritical() << "UrlBlocker: applied" << urls.size() << "browser URL policies";
 	}
 	else
 	{
-		vCritical() << "UrlBlocker: failed to write browser policies; administrator privileges are required";
+		const bool edgeRollback = writeOwnedPolicyValues(
+				EdgePolicyKey, EdgeOwnershipKey, previousEdgeState.ownedUrls );
+		const bool chromeRollback = writeOwnedPolicyValues(
+				ChromePolicyKey, ChromeOwnershipKey, previousChromeState.ownedUrls );
+		vCritical() << "UrlBlocker: browser policy apply failed; rollback"
+					<< ( chromeRollback && edgeRollback ? "completed" : "requires recovery" );
 	}
 #else
 	Q_UNUSED( urls )
@@ -510,15 +795,36 @@ void UrlBlocker::applyBrowserPolicies( const QStringList& urls )
 void UrlBlocker::clearBrowserPolicies()
 {
 #ifdef Q_OS_WIN
+	const ScopedNamedMutex policyMutex{L"Global\\VeyonAccessBlockBrowserPolicy"};
+	if( !policyMutex )
+	{
+		vCritical() << "UrlBlocker: could not acquire browser policy writer mutex";
+		return;
+	}
+	OwnedPolicyState previousChromeState;
+	OwnedPolicyState previousEdgeState;
+	if( readOwnedPolicyState( ChromePolicyKey, ChromeOwnershipKey, &previousChromeState ) == false ||
+		readOwnedPolicyState( EdgePolicyKey, EdgeOwnershipKey, &previousEdgeState ) == false )
+	{
+		vCritical() << "UrlBlocker: browser policy clear preflight failed; unmanaged values were preserved";
+		return;
+	}
+
 	const bool chromeSuccess = clearOwnedPolicyValues( ChromePolicyKey, ChromeOwnershipKey );
-	const bool edgeSuccess = clearOwnedPolicyValues( EdgePolicyKey, EdgeOwnershipKey );
+	const bool edgeSuccess = chromeSuccess &&
+			clearOwnedPolicyValues( EdgePolicyKey, EdgeOwnershipKey );
 	if( chromeSuccess && edgeSuccess )
 	{
 		vCritical() << "UrlBlocker: cleared browser policies";
 	}
 	else
 	{
-		vCritical() << "UrlBlocker: failed to clear browser policies; administrator privileges are required";
+		const bool edgeRollback = writeOwnedPolicyValues(
+				EdgePolicyKey, EdgeOwnershipKey, previousEdgeState.ownedUrls );
+		const bool chromeRollback = writeOwnedPolicyValues(
+				ChromePolicyKey, ChromeOwnershipKey, previousChromeState.ownedUrls );
+		vCritical() << "UrlBlocker: browser policy clear failed; rollback"
+					<< ( chromeRollback && edgeRollback ? "completed" : "requires recovery" );
 	}
 #endif
 }
@@ -527,50 +833,129 @@ void UrlBlocker::clearBrowserPolicies()
 void UrlBlocker::applyNetworkFilters()
 {
 #ifdef Q_OS_WIN
+	cancelNetworkResolution();
+	const auto generation = m_resolutionGeneration;
 	if( m_blockedDomains.isEmpty() )
 	{
-		clearNetworkFilters();
+		if( clearNetworkFilters() == false )
+		{
+			vWarning() << "UrlBlocker: closing WFP session after transactional clear failure";
+			closeNetworkEngine();
+		}
 		return;
 	}
 
-	QVector<QPair<QString, QHostAddress>> resolvedAddresses;
-	bool allDomainsResolved = true;
+	m_resolutionFailed = false;
+	m_resolvedAddresses.clear();
 	for( const auto& domain : std::as_const( m_blockedDomains ) )
 	{
-		const auto hostInfo = QHostInfo::fromName( domain );
-		if( hostInfo.error() != QHostInfo::NoError )
-		{
-			allDomainsResolved = false;
-			vCritical() << "UrlBlocker: failed to resolve one configured domain:" << hostInfo.errorString();
-			continue;
-		}
+		m_pendingDomains.insert( domain );
+		const auto lookupId = QHostInfo::lookupHost(
+				domain, this,
+				[this, generation, domain]( const QHostInfo& hostInfo ) {
+					if( generation != m_resolutionGeneration ||
+						m_pendingDomains.remove( domain ) == 0 )
+					{
+						return;
+					}
 
-		const auto previousAddressCount = resolvedAddresses.size();
-		for( const auto& address : hostInfo.addresses() )
+					bool domainResolved = false;
+					for( const auto& address : hostInfo.addresses() )
+					{
+						if( address.protocol() == QAbstractSocket::IPv4Protocol ||
+							address.protocol() == QAbstractSocket::IPv6Protocol )
+						{
+							const QPair<QString, QHostAddress> resolvedAddress{domain, address};
+							if( m_resolvedAddresses.contains( resolvedAddress ) == false )
+							{
+								m_resolvedAddresses.append( resolvedAddress );
+							}
+							domainResolved = true;
+						}
+					}
+					if( domainResolved == false )
+					{
+						m_resolutionFailed = true;
+						vCritical() << "UrlBlocker: failed to resolve one configured domain:"
+									<< hostInfo.errorString();
+					}
+					if( m_pendingDomains.isEmpty() )
+					{
+						finishNetworkResolution( generation );
+					}
+				} );
+		if( lookupId < 0 )
 		{
-			if( address.protocol() == QAbstractSocket::IPv4Protocol ||
-				address.protocol() == QAbstractSocket::IPv6Protocol )
-			{
-				resolvedAddresses.append( { domain, address } );
-			}
+			m_pendingDomains.remove( domain );
+			m_resolutionFailed = true;
 		}
-		if( resolvedAddresses.size() == previousAddressCount )
+		else
 		{
-			allDomainsResolved = false;
+			m_lookupIds.append( lookupId );
 		}
 	}
 
-	if( resolvedAddresses.isEmpty() || allDomainsResolved == false )
+	if( m_pendingDomains.isEmpty() )
 	{
+		finishNetworkResolution( generation );
+	}
+	else
+	{
+		m_resolutionTimer.start();
+	}
+#endif
+}
+
+
+void UrlBlocker::cancelNetworkResolution()
+{
+	++m_resolutionGeneration;
+	m_resolutionTimer.stop();
+	for( const auto lookupId : std::as_const( m_lookupIds ) )
+	{
+		QHostInfo::abortHostLookup( lookupId );
+	}
+	m_lookupIds.clear();
+	m_pendingDomains.clear();
+	m_resolvedAddresses.clear();
+}
+
+
+void UrlBlocker::finishNetworkResolution( quint64 generation )
+{
+#ifdef Q_OS_WIN
+	if( generation != m_resolutionGeneration )
+	{
+		return;
+	}
+	m_resolutionTimer.stop();
+	m_lookupIds.clear();
+	if( m_resolutionFailed || m_resolvedAddresses.isEmpty() )
+	{
+		m_resolvedAddresses.clear();
 		vCritical() << "UrlBlocker: keeping existing WFP generation because resolution was incomplete";
 		return;
 	}
+
+	const auto resolvedAddresses = m_resolvedAddresses;
+	m_resolvedAddresses.clear();
+	replaceNetworkFilters( resolvedAddresses );
+#else
+	Q_UNUSED( generation )
+#endif
+}
+
+
+void UrlBlocker::replaceNetworkFilters(
+		const QVector<QPair<QString, QHostAddress>>& resolvedAddresses )
+{
+#ifdef Q_OS_WIN
 
 	auto engine = static_cast<HANDLE>( m_filterEngine );
 	if( engine == nullptr )
 	{
 		FWPM_SESSION0 session{};
-		session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+		session.flags = DynamicWfpSessionFlag;
 		const auto openResult = FwpmEngineOpen0( nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &engine );
 		if( openResult != ERROR_SUCCESS )
 		{
@@ -579,12 +964,14 @@ void UrlBlocker::applyNetworkFilters()
 		}
 		m_filterEngine = engine;
 
+		const auto sublayerKey = accessBlockSublayerKey();
 		FWPM_SUBLAYER0 sublayer{};
-		sublayer.subLayerKey = AccessBlockSublayer;
+		sublayer.subLayerKey = sublayerKey;
 		sublayer.displayData.name = const_cast<wchar_t*>( L"CHECK NODE domain blocking" );
 		sublayer.weight = 0x100;
 		const auto sublayerResult = FwpmSubLayerAdd0( engine, &sublayer, nullptr );
-		if( sublayerResult != ERROR_SUCCESS && sublayerResult != FWP_E_ALREADY_EXISTS )
+		if( sublayerResult != ERROR_SUCCESS &&
+			sublayerResult != static_cast<DWORD>( FWP_E_ALREADY_EXISTS ) )
 		{
 			vCritical() << "UrlBlocker: failed to create WFP sublayer:" << sublayerResult;
 			FwpmEngineClose0( engine );
@@ -631,7 +1018,7 @@ void UrlBlocker::applyNetworkFilters()
 		FWPM_FILTER0 filter{};
 		const auto filterName = QStringLiteral( "CHECK NODE block %1" ).arg( domain ).toStdWString();
 		filter.displayData.name = const_cast<wchar_t*>( filterName.c_str() );
-		filter.subLayerKey = AccessBlockSublayer;
+		filter.subLayerKey = accessBlockSublayerKey();
 		filter.layerKey = address.protocol() == QAbstractSocket::IPv4Protocol
 				? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6;
 		filter.action.type = FWP_ACTION_BLOCK;
@@ -659,7 +1046,9 @@ void UrlBlocker::applyNetworkFilters()
 	{
 		for( const auto filterId : std::as_const( m_filterIds ) )
 		{
-			if( FwpmFilterDeleteById0( engine, filterId ) != ERROR_SUCCESS )
+			const auto deleteResult = FwpmFilterDeleteById0( engine, filterId );
+			if( deleteResult != ERROR_SUCCESS &&
+				deleteResult != static_cast<DWORD>( FWP_E_FILTER_NOT_FOUND ) )
 			{
 				success = false;
 				break;
@@ -689,7 +1078,7 @@ void UrlBlocker::applyNetworkFilters()
 }
 
 
-void UrlBlocker::clearNetworkFilters()
+bool UrlBlocker::clearNetworkFilters()
 {
 #ifdef Q_OS_WIN
 	const auto engine = static_cast<HANDLE>( m_filterEngine );
@@ -698,12 +1087,14 @@ void UrlBlocker::clearNetworkFilters()
 		if( FwpmTransactionBegin0( engine, 0 ) != ERROR_SUCCESS )
 		{
 			vCritical() << "UrlBlocker: failed to begin WFP clear transaction";
-			return;
+			return false;
 		}
 		bool success = true;
 		for( const auto filterId : std::as_const( m_filterIds ) )
 		{
-			if( FwpmFilterDeleteById0( engine, filterId ) != ERROR_SUCCESS )
+			const auto deleteResult = FwpmFilterDeleteById0( engine, filterId );
+			if( deleteResult != ERROR_SUCCESS &&
+				deleteResult != static_cast<DWORD>( FWP_E_FILTER_NOT_FOUND ) )
 			{
 				success = false;
 				break;
@@ -713,11 +1104,12 @@ void UrlBlocker::clearNetworkFilters()
 		{
 			FwpmTransactionAbort0( engine );
 			vCritical() << "UrlBlocker: WFP clear aborted; existing generation remains active";
-			return;
+			return false;
 		}
 	}
 	m_filterIds.clear();
 #endif
+	return true;
 }
 
 
@@ -727,10 +1119,12 @@ void UrlBlocker::closeNetworkEngine()
 	const auto engine = static_cast<HANDLE>( m_filterEngine );
 	if( engine != nullptr )
 	{
-		FwpmSubLayerDeleteByKey0( engine, &AccessBlockSublayer );
+		const auto sublayerKey = accessBlockSublayerKey();
+		FwpmSubLayerDeleteByKey0( engine, &sublayerKey );
 		FwpmEngineClose0( engine );
 	}
 #endif
+	m_filterIds.clear();
 	m_filterEngine = nullptr;
 }
 
@@ -738,7 +1132,12 @@ void UrlBlocker::closeNetworkEngine()
 void UrlBlocker::clear()
 {
 	m_refreshTimer.stop();
-	clearNetworkFilters();
+	cancelNetworkResolution();
+	if( clearNetworkFilters() == false )
+	{
+		vWarning() << "UrlBlocker: closing WFP session after transactional clear failure";
+		closeNetworkEngine();
+	}
 	clearBrowserPolicies();
 	m_blockedDomains.clear();
 	m_blockedBrowserUrls.clear();

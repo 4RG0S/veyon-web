@@ -7,6 +7,8 @@
  */
 
 #include <QtTest>
+#include <QCborParserError>
+#include <QCborValue>
 
 #include "AccessBlockProtocol.h"
 
@@ -42,6 +44,12 @@ void AccessBlockProtocolTest::roundTripAndCorrelate()
 	payload.insert( QStringLiteral("probe"), true );
 	const auto request = AccessBlockProtocol::makeMessage(
 			AccessBlockProtocol::Command::QueryCapabilities, payload );
+	QCborParserError parserError;
+	const auto rawEnvelope = QCborValue::fromCbor(
+			request.argument( AccessBlockProtocol::EnvelopeArgument ).toByteArray(),
+			&parserError ).toMap();
+	QCOMPARE( parserError.error, QCborError::NoError );
+	QVERIFY( rawEnvelope.value( QStringLiteral("expectedPreviousHash") ).isNull() );
 
 	AccessBlockProtocol::Envelope requestEnvelope;
 	QString error;

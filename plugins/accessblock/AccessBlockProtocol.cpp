@@ -65,7 +65,14 @@ FeatureMessage AccessBlockProtocol::makeMessage( Command command,
 	envelope.insert( CommandIdKey, commandId.toString( QUuid::WithoutBraces ) );
 	envelope.insert( AssignmentIdKey, assignmentId.toString( QUuid::WithoutBraces ) );
 	envelope.insert( RevisionKey, static_cast<qint64>( revision ) );
-	envelope.insert( ExpectedPreviousHashKey, expectedPreviousHash );
+	if( expectedPreviousHash.isEmpty() )
+	{
+		envelope.insert( ExpectedPreviousHashKey, QCborValue( QCborValue::Null ) );
+	}
+	else
+	{
+		envelope.insert( ExpectedPreviousHashKey, expectedPreviousHash );
+	}
 	envelope.insert( PayloadHashKey, QCryptographicHash::hash( payloadBytes, QCryptographicHash::Sha256 ) );
 	envelope.insert( PayloadKey, payloadBytes );
 	envelope.insert( RequestedAtUtcKey, QDateTime::currentDateTimeUtc().toString( Qt::ISODateWithMs ) );

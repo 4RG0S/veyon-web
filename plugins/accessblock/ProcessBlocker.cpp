@@ -26,6 +26,7 @@
 #include "VeyonCore.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFileInfo>
 
 #include <string>
@@ -41,7 +42,8 @@ namespace
 
 constexpr auto PollInterval = 1000;
 #ifdef Q_OS_WIN
-constexpr DWORD TerminationWaitTimeout = 500;
+constexpr DWORD TerminationWaitTimeout = 100;
+constexpr auto PollWorkBudget = 500;
 #endif
 
 
@@ -228,6 +230,8 @@ void ProcessBlocker::clear()
 void ProcessBlocker::pollProcesses()
 {
 #ifdef Q_OS_WIN
+	QElapsedTimer workTimer;
+	workTimer.start();
 	const ScopedHandle snapshot{CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 )};
 	if( !snapshot )
 	{
@@ -241,6 +245,11 @@ void ProcessBlocker::pollProcesses()
 	{
 		do
 		{
+			if( workTimer.elapsed() >= PollWorkBudget )
+			{
+				vWarning() << "ProcessBlocker: poll work budget exhausted; remaining processes deferred";
+				break;
+			}
 			const auto executableName = normalizedExecutableName( QString::fromWCharArray( processEntry.szExeFile ) );
 			if( m_blockedApps.contains( executableName ) &&
 				processEntry.th32ProcessID != 0 &&

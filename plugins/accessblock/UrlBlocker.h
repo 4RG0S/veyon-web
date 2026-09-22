@@ -24,7 +24,9 @@
 
 #pragma once
 
+#include <QHostAddress>
 #include <QObject>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 #include <QVector>
@@ -47,7 +49,10 @@ public:
 
 private:
 	void applyNetworkFilters();
-	void clearNetworkFilters();
+	void cancelNetworkResolution();
+	void finishNetworkResolution( quint64 generation );
+	void replaceNetworkFilters( const QVector<QPair<QString, QHostAddress>>& resolvedAddresses );
+	bool clearNetworkFilters();
 	void closeNetworkEngine();
 	void applyBrowserPolicies( const QStringList& urls );
 	void clearBrowserPolicies();
@@ -56,6 +61,12 @@ private:
 	QStringList m_blockedBrowserUrls;
 	QVector<quint64> m_filterIds;
 	QTimer m_refreshTimer;
+	QTimer m_resolutionTimer;
+	QVector<int> m_lookupIds;
+	QSet<QString> m_pendingDomains;
+	QVector<QPair<QString, QHostAddress>> m_resolvedAddresses;
+	quint64 m_resolutionGeneration{};
+	bool m_resolutionFailed{};
 	void* m_filterEngine{};
 
 };
